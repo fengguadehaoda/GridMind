@@ -1,0 +1,6 @@
+/* GridMind · 兼容 shim
+ * 真实样式入口已迁移到 src/styles/tokens.scss + reset.scss + animations.scss + utilities.scss
+ * 保留此文件仅为兼容可能残留的旧 import 引用，新代码请直接 import '@/styles/tokens.scss'
+ */
+@import './styles/tokens.scss';
+@import './styles/reset.scss';

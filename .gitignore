@@ -1,0 +1,78 @@
+# ============================================================
+# GridMind 项目根 .gitignore（M0 阶段追加 docker-data/）
+# ============================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Environment files (保留 .env.example)
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Data — sqlite 数据库
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/chroma/
+data/uploads/
+
+# ===== M0 阶段新增（知识图谱 Neo4j 升级）=====
+# Neo4j 容器数据卷（docker-data/ 整个目录忽略，包含 Neo4j 持久化数据）
+docker-data/
+
+# ===== 前端 Node/Vite =====
+# Node.js 依赖（157MB，必须忽略）
+web/node_modules/
+web/pnpm-lock.yaml
+# Vite 构建产物
+web/dist/
+web/src/.vite/
+# Vue 缓存
+.web-vite/
+
+# ===== WorkBuddy 工作区 =====
+# WorkBuddy workspace memory（项目级 .workbuddy/）
+.workbuddy/
+
+# ===== 调试截图（避免 commit 历史噪音，按需保留）=====
+# 解开注释可保留；默认忽略
+# *.png
+# *.jpg
+# *.jpeg
+
+# ===== IDE 额外 =====
+*.iml
+*.iws
+.history/

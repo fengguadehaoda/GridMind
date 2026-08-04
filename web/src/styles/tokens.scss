@@ -1,0 +1,291 @@
+// ─── 设计令牌入口（统一入口，合并 dark/light）───
+// 顺序：SCSS 变量 → 共享 CSS 变量 → 默认主题（防 FOUC）→ dark/light 主题覆盖
+
+@use './tokens.shared.scss' as *;
+
+// ─── 共享 CSS 变量（SCSS 变量转 CSS 变量）──
+:root {
+  --font-display: #{$font-display};
+  --font-mono: #{$font-mono};
+  --font-body: #{$font-body};
+  --font-cn: #{$font-cn};
+
+  --fs-xs: #{$fs-xs};
+  --fs-sm: #{$fs-sm};
+  --fs-md: #{$fs-md};
+  --fs-lg: #{$fs-lg};
+  --fs-xl: #{$fs-xl};
+  --fs-2xl: #{$fs-2xl};
+  --fs-3xl: #{$fs-3xl};
+
+  --fw-regular: #{$fw-regular};
+  --fw-medium: #{$fw-medium};
+  --fw-semibold: #{$fw-semibold};
+  --fw-bold: #{$fw-bold};
+
+  --lh-tight: #{$lh-tight};
+  --lh-normal: #{$lh-normal};
+  --lh-loose: #{$lh-loose};
+
+  --space-1: #{$space-1};
+  --space-2: #{$space-2};
+  --space-3: #{$space-3};
+  --space-4: #{$space-4};
+  --space-5: #{$space-5};
+  --space-6: #{$space-6};
+  --space-8: #{$space-8};
+  --space-10: #{$space-10};
+  --space-12: #{$space-12};
+
+  --radius-sm: #{$radius-sm};
+  --radius-md: #{$radius-md};
+  --radius-lg: #{$radius-lg};
+  --radius-xl: #{$radius-xl};
+  --radius-pill: #{$radius-pill};
+
+  --ease-out-quint: #{$ease-out-quint};
+  --ease-in-out-cubic: #{$ease-in-out-cubic};
+  --ease-spring: #{$ease-spring};
+
+  --dur-instant: #{$dur-instant};
+  --dur-fast: #{$dur-fast};
+  --dur-base: #{$dur-base};
+  --dur-slow: #{$dur-slow};
+
+  --z-base: #{$z-base};
+  --z-dropdown: #{$z-dropdown};
+  --z-sticky: #{$z-sticky};
+  --z-header: #{$z-header};
+  --z-dialog: #{$z-dialog};
+  --z-toast: #{$z-toast};
+
+  --grid-cell: #{$grid-cell};
+  --glass-blur: #{$glass-blur};
+
+  // 主题切换全局过渡
+  --theme-transition: background-color var(--dur-base) var(--ease-in-out-cubic),
+                      color var(--dur-base) var(--ease-in-out-cubic),
+                      border-color var(--dur-base) var(--ease-in-out-cubic),
+                      box-shadow var(--dur-base) var(--ease-in-out-cubic);
+}
+
+// ─── 默认主题（防止 FOUC 期间无 data-theme 时取 dark）──
+:root {
+  --bg-base: #0a1228;
+  --bg-elevated: #0f1a33;
+  --bg-card: rgba(255, 255, 255, 0.04);
+  --bg-card-solid: #15244a;
+  --bg-input: #0f1f33;
+  --bg-overlay: rgba(5, 11, 26, 0.85);
+  --bg-void: #050b1a;
+  --text-primary: #e6f1ff;
+  --text-secondary: #8fa3c7;
+  --text-muted: #5a6b8c;
+  --text-inverse: #050b1a;
+  --text-mono: #7fe9ff;
+  --brand-primary: #00e5ff;
+  --brand-primary-hover: #33eeff;
+  --brand-primary-soft: rgba(0, 229, 255, 0.15);
+  --brand-primary-deep: #006978;
+  --brand-primary-fade: rgba(0, 229, 255, 0.08);
+  --brand-accent: #ffb300;
+  --brand-accent-soft: rgba(255, 179, 0, 0.15);
+  --brand-accent-hover: #ffc107;
+  --brand-magenta: #ff2d7b;
+  --brand-violet: #9d4edd;
+  --status-success: #00e676;
+  --status-success-soft: rgba(0, 230, 118, 0.15);
+  --status-warning: #ffb300;
+  --status-warning-soft: rgba(255, 179, 0, 0.15);
+  --status-danger: #ff4757;
+  --status-danger-soft: rgba(255, 71, 87, 0.15);
+  --status-info: #00e5ff;
+  --status-info-soft: rgba(0, 229, 255, 0.15);
+  --status-neutral: #8b9bb4;
+  --border-default: rgba(0, 229, 255, 0.2);
+  --border-strong: rgba(0, 229, 255, 0.4);
+  --border-muted: rgba(138, 153, 181, 0.15);
+  --border-hud: 1px solid rgba(0, 229, 255, 0.25);
+  --border-hud-strong: 1px solid rgba(0, 229, 255, 0.5);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.55);
+  --glow-primary: 0 0 12px rgba(0, 229, 255, 0.45), 0 0 32px rgba(0, 229, 255, 0.18);
+  --glow-primary-soft: 0 0 8px rgba(0, 229, 255, 0.3);
+  --glow-accent: 0 0 12px rgba(255, 179, 0, 0.5);
+  --glow-danger: 0 0 12px rgba(255, 71, 87, 0.55);
+  --glow-success: 0 0 10px rgba(0, 230, 118, 0.5);
+  --glow-warning: 0 0 10px rgba(255, 179, 0, 0.5);
+  --grid-color: rgba(0, 229, 255, 0.08);
+  --grid-glow: rgba(0, 229, 255, 0.15);
+  --role-user-bg: rgba(255, 179, 0, 0.08);
+  --role-user-border: rgba(255, 179, 0, 0.4);
+  --role-user-glow: var(--glow-accent);
+  --role-assistant-bg: rgba(0, 229, 255, 0.06);
+  --role-assistant-border: rgba(0, 229, 255, 0.3);
+  --role-assistant-glow: var(--glow-primary-soft);
+  --role-tool-bg: rgba(138, 155, 180, 0.08);
+  --role-tool-border: rgba(138, 155, 180, 0.3);
+  --role-system-bg: rgba(255, 71, 87, 0.06);
+  --role-system-border: rgba(255, 71, 87, 0.3);
+  --metric-voltage: #00e5ff;
+  --metric-current: #ffb300;
+  --metric-temperature: #ff4757;
+  --metric-humidity: #13c2c2;
+  --metric-pressure: #9d4edd;
+  --metric-power: #52c41a;
+  --code-bg: #050b1a;
+  --code-border: rgba(0, 229, 255, 0.15);
+  --code-text: #e6f1ff;
+  --scanline-color: rgba(0, 229, 255, 0.06);
+  --scanline-opacity: 0.6;
+  --glass-bg: rgba(15, 26, 51, 0.65);
+  --glass-border: rgba(0, 229, 255, 0.18);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  --el-bg-color: #0f1a33;
+  --el-bg-color-page: #0a1228;
+  --el-bg-color-overlay: #15244a;
+  --el-text-color-primary: #e6f1ff;
+  --el-text-color-regular: #8fa3c7;
+  --el-text-color-secondary: #8fa3c7;
+  --el-text-color-placeholder: #5a6b8c;
+  --el-text-color-disabled: #5a6b8c;
+  --el-border-color: rgba(0, 229, 255, 0.2);
+  --el-border-color-light: rgba(0, 229, 255, 0.12);
+  --el-border-color-lighter: rgba(0, 229, 255, 0.08);
+  --el-border-color-extra-light: rgba(0, 229, 255, 0.04);
+  --el-border-color-dark: rgba(0, 229, 255, 0.4);
+  --el-fill-color: rgba(255, 255, 255, 0.04);
+  --el-fill-color-light: rgba(255, 255, 255, 0.06);
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.02);
+  --el-fill-color-blank: #0f1a33;
+  --el-mask-color: rgba(5, 11, 26, 0.7);
+  --el-color-primary: #00e5ff;
+  --el-color-primary-light-3: #33eeff;
+  --el-color-primary-light-5: #66f0ff;
+  --el-color-primary-light-7: #99f3ff;
+  --el-color-primary-light-8: #cce8ff;
+  --el-color-primary-light-9: rgba(0, 229, 255, 0.15);
+  --el-color-primary-dark-2: #00b8d4;
+  --el-color-success: #00e676;
+  --el-color-success-light-9: rgba(0, 230, 118, 0.15);
+  --el-color-warning: #ffb300;
+  --el-color-warning-light-9: rgba(255, 179, 0, 0.15);
+  --el-color-danger: #ff4757;
+  --el-color-danger-light-9: rgba(255, 71, 87, 0.15);
+  --el-color-info: #8b9bb4;
+  --el-color-info-light-9: rgba(138, 155, 180, 0.15);
+}
+
+// ─── 暗色主题覆写（仅覆盖差异）──
+:root[data-theme="dark"] {
+  // 与默认一致（显式声明便于调试 & 后代选择器可识别）
+}
+
+// ─── 亮色主题覆写（白底）──
+:root[data-theme="light"] {
+  --bg-base: #f5f7fa;
+  --bg-elevated: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-solid: #ffffff;
+  --bg-input: #ffffff;
+  --bg-overlay: rgba(245, 247, 250, 0.85);
+  --bg-void: #edf2f7;
+  --brand-primary: #006978;
+  --brand-primary-hover: #005566;
+  --brand-primary-soft: rgba(0, 105, 120, 0.1);
+  --brand-primary-deep: #003e4a;
+  --brand-primary-fade: rgba(0, 105, 120, 0.05);
+  --brand-accent: #ff8f00;
+  --brand-accent-soft: rgba(255, 143, 0, 0.12);
+  --brand-accent-hover: #ff6f00;
+  --brand-magenta: #d81b60;
+  --brand-violet: #7b1fa2;
+  --status-success: #389e0d;
+  --status-success-soft: rgba(56, 158, 13, 0.12);
+  --status-warning: #d48806;
+  --status-warning-soft: rgba(212, 136, 6, 0.12);
+  --status-danger: #d32f2f;
+  --status-danger-soft: rgba(211, 47, 47, 0.1);
+  --status-info: #096dd9;
+  --status-info-soft: rgba(9, 109, 217, 0.1);
+  --status-neutral: #718096;
+  --text-primary: #1a1a2e;
+  --text-secondary: #4a5568;
+  --text-muted: #718096;
+  --text-inverse: #ffffff;
+  --text-mono: #006978;
+  --border-default: #e2e8f0;
+  --border-strong: #cbd5e0;
+  --border-muted: #edf2f7;
+  --border-hud: 1px solid rgba(0, 105, 120, 0.25);
+  --border-hud-strong: 1px solid rgba(0, 105, 120, 0.5);
+  --shadow-sm: 0 1px 2px rgba(13, 27, 42, 0.06);
+  --shadow-card: 0 2px 12px rgba(13, 27, 42, 0.08);
+  --shadow-modal: 0 12px 40px rgba(13, 27, 42, 0.15);
+  --glow-primary: 0 0 0 1px rgba(0, 105, 120, 0.18);
+  --glow-primary-soft: 0 0 8px rgba(0, 105, 120, 0.18);
+  --glow-accent: 0 0 0 1px rgba(255, 143, 0, 0.18);
+  --glow-danger: 0 0 0 1px rgba(211, 47, 47, 0.22);
+  --glow-success: 0 0 0 1px rgba(56, 158, 13, 0.18);
+  --glow-warning: 0 0 0 1px rgba(212, 136, 6, 0.18);
+  --grid-color: #cbd5e0;
+  --grid-glow: rgba(0, 105, 120, 0.08);
+  --role-user-bg: rgba(255, 143, 0, 0.06);
+  --role-user-border: rgba(255, 143, 0, 0.4);
+  --role-user-glow: 0 0 0 1px rgba(255, 143, 0, 0.18);
+  --role-assistant-bg: rgba(0, 105, 120, 0.04);
+  --role-assistant-border: rgba(0, 105, 120, 0.3);
+  --role-assistant-glow: 0 0 0 1px rgba(0, 105, 120, 0.18);
+  --role-tool-bg: #edf2f7;
+  --role-tool-border: #cbd5e0;
+  --role-system-bg: rgba(211, 47, 47, 0.04);
+  --role-system-border: rgba(211, 47, 47, 0.3);
+  --metric-voltage: #006978;
+  --metric-current: #d48806;
+  --metric-temperature: #d32f2f;
+  --metric-humidity: #0e7490;
+  --metric-pressure: #7b1fa2;
+  --metric-power: #389e0d;
+  --code-bg: #f1f5f9;
+  --code-border: #cbd5e0;
+  --code-text: #1a1a2e;
+  --scanline-color: transparent;
+  --scanline-opacity: 0;
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: #e2e8f0;
+  --glass-shadow: 0 4px 16px rgba(13, 27, 42, 0.08);
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f5f7fa;
+  --el-bg-color-overlay: #ffffff;
+  --el-text-color-primary: #1a1a2e;
+  --el-text-color-regular: #4a5568;
+  --el-text-color-secondary: #4a5568;
+  --el-text-color-placeholder: #718096;
+  --el-text-color-disabled: #cbd5e0;
+  --el-border-color: #e2e8f0;
+  --el-border-color-light: #edf2f7;
+  --el-border-color-lighter: #f1f5f9;
+  --el-border-color-extra-light: #f7fafc;
+  --el-border-color-dark: #cbd5e0;
+  --el-fill-color: #f1f5f9;
+  --el-fill-color-light: #f7fafc;
+  --el-fill-color-lighter: #ffffff;
+  --el-fill-color-blank: #ffffff;
+  --el-mask-color: rgba(13, 27, 42, 0.4);
+  --el-color-primary: #006978;
+  --el-color-primary-light-3: #2c8a9b;
+  --el-color-primary-light-5: #599faf;
+  --el-color-primary-light-7: #85b5c2;
+  --el-color-primary-light-8: #b2cad3;
+  --el-color-primary-light-9: rgba(0, 105, 120, 0.1);
+  --el-color-primary-dark-2: #003e4a;
+  --el-color-success: #389e0d;
+  --el-color-success-light-9: rgba(56, 158, 13, 0.12);
+  --el-color-warning: #d48806;
+  --el-color-warning-light-9: rgba(212, 136, 6, 0.12);
+  --el-color-danger: #d32f2f;
+  --el-color-danger-light-9: rgba(211, 47, 47, 0.1);
+  --el-color-info: #096dd9;
+  --el-color-info-light-9: rgba(9, 109, 217, 0.1);
+}

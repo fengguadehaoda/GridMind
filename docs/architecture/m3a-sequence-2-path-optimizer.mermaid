@@ -1,0 +1,42 @@
+%% M3a Sequence Diagram 2: 多跳路径优化调用链（LRU 缓存 + top_k 剪枝）
+sequenceDiagram
+    autonumber
+    actor Caller as MCP Tool / RAG Engine
+    participant Opt as KGPathOptimizer
+    participant Cache as LRU Cache<br/>(OrderedDict, size=256)
+    participant Client as KGClient
+    participant Backend as Neo4j / NetworkX
+
+    Caller->>Opt: expand(client, seed_ids=[A,B], hops=4, relation_types=["CAUSES"])
+    activate Opt
+
+    Opt->>Opt: build cache key<br/>(("A","B"), 4, ("CAUSES",))
+    Opt->>Cache: get(key)?
+
+    alt 缓存命中
+        Cache-->>Opt: OptimizedResult(cache_hit=True)
+        Opt->>Opt: _hits += 1
+        Opt->>Opt: move_to_end(key)
+        Opt-->>Caller: (entities, paths) + cache_hit=True
+    else 缓存未命中
+        Cache-->>Opt: KeyError
+        Opt->>Opt: _misses += 1
+        Opt->>Opt: estimate_cost(seed_count=2, hops=4, relation_count=1000)
+        Note over Opt: latency = 2*4*10 + 1000*0.05 = 130ms<br/>confidence = 1 - 4*0.15 = 0.40
+        Opt->>Client: expand_entities([A,B], hops=4, limit=100)
+        activate Client
+        Client->>Backend: cypher_query / expand
+        Backend-->>Client: raw_entities + raw_paths (50 条)
+        deactivate Client
+        Opt->>Opt: sort by estimated_latency ASC
+        Opt->>Opt: take top_k=5
+        Opt->>Cache: put(key, OptimizedResult)
+        alt 缓存满 (size > 256)
+            Cache->>Cache: popitem(last=False)  # LRU 淘汰
+            Opt->>Opt: _evictions += 1
+        end
+        Opt-->>Caller: (entities, paths) + cache_hit=False
+    end
+    deactivate Opt
+
+    Note over Caller,Cache: 第二次相同查询 → cache_hit=True<br/>延迟从 ~80ms 降至 ~5ms

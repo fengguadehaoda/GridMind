@@ -1,0 +1,328 @@
+// ─── Element Plus 主题覆盖（双主题）───────────
+// 这是唯一允许出现 [data-theme="..."] 选择器的文件（架构 §7.4）
+// 通过覆写 EP 自身的 CSS 变量实现主题切换
+
+// ── 防御性兜底：防止 EP CSS 未加载时 SVG 图标撑屏 ──
+.el-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  font-size: inherit;
+}
+.el-icon svg {
+  width: 1em;
+  height: 1em;
+  display: block;
+}
+
+// ── 通用：所有主题下统一基础结构 ──
+.el-popper,
+.el-tooltip__popper,
+.el-message,
+.el-message-box,
+.el-notification {
+  border: 1px solid var(--border-default) !important;
+}
+
+// ── 暗主题 EP 覆盖 ──
+[data-theme="dark"] {
+  .el-input__wrapper,
+  .el-textarea__inner {
+    background-color: var(--bg-input) !important;
+    box-shadow: 0 0 0 1px var(--border-default) inset !important;
+    color: var(--text-primary) !important;
+  }
+  .el-input__wrapper:hover,
+  .el-textarea__inner:hover {
+    box-shadow: 0 0 0 1px var(--brand-primary) inset !important;
+  }
+  .el-input__wrapper.is-focus,
+  .el-textarea__inner:focus {
+    box-shadow: 0 0 0 1px var(--brand-primary) inset, 0 0 0 2px var(--brand-primary-soft) !important;
+  }
+  .el-input__inner,
+  .el-textarea__inner {
+    color: var(--text-primary) !important;
+  }
+  .el-input__inner::placeholder,
+  .el-textarea__inner::placeholder {
+    color: var(--text-muted) !important;
+  }
+
+  // Button
+  .el-button--primary {
+    --el-button-bg-color: var(--brand-primary);
+    --el-button-border-color: var(--brand-primary);
+    --el-button-hover-bg-color: var(--brand-primary-hover);
+    --el-button-hover-border-color: var(--brand-primary-hover);
+    --el-button-text-color: var(--text-inverse);
+    --el-button-active-bg-color: var(--brand-primary-deep);
+    --el-button-active-border-color: var(--brand-primary-deep);
+  }
+  // Primary link button (e.g. table row "详情"): use muted tone in dark for visual quietness
+  .el-button--primary.is-link {
+    --el-button-text-color: var(--text-muted);
+  }
+  .el-button--primary.is-link:hover {
+    --el-button-text-color: var(--text-secondary);
+  }
+  .el-button--success {
+    --el-button-bg-color: var(--status-success);
+    --el-button-border-color: var(--status-success);
+  }
+  .el-button--warning {
+    --el-button-bg-color: var(--brand-accent);
+    --el-button-border-color: var(--brand-accent);
+  }
+  .el-button--danger {
+    --el-button-bg-color: var(--status-danger);
+    --el-button-border-color: var(--status-danger);
+  }
+
+  // Tag
+  .el-tag {
+    --el-tag-border-color: var(--border-default);
+  }
+  .el-tag--success {
+    --el-tag-bg-color: var(--status-success-soft);
+    --el-tag-text-color: var(--status-success);
+    --el-tag-border-color: var(--status-success);
+  }
+  .el-tag--warning {
+    --el-tag-bg-color: var(--status-warning-soft);
+    --el-tag-text-color: var(--status-warning);
+    --el-tag-border-color: var(--status-warning);
+  }
+  .el-tag--danger {
+    --el-tag-bg-color: var(--status-danger-soft);
+    --el-tag-text-color: var(--status-danger);
+    --el-tag-border-color: var(--status-danger);
+  }
+  .el-tag--info {
+    --el-tag-bg-color: var(--status-info-soft);
+    --el-tag-text-color: var(--status-info);
+    --el-tag-border-color: var(--status-info);
+  }
+  .el-tag--primary {
+    --el-tag-bg-color: var(--brand-primary-soft);
+    --el-tag-text-color: var(--brand-primary);
+    --el-tag-border-color: var(--brand-primary);
+  }
+
+  // Dialog / Drawer
+  .el-dialog,
+  .el-drawer {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-default) !important;
+  }
+  .el-dialog__title,
+  .el-drawer__title {
+    color: var(--text-primary) !important;
+  }
+  .el-dialog__body,
+  .el-drawer__body {
+    color: var(--text-secondary) !important;
+  }
+  .el-dialog__close,
+  .el-drawer__close-btn {
+    color: var(--text-muted) !important;
+  }
+  .el-dialog__close:hover,
+  .el-drawer__close-btn:hover {
+    color: var(--brand-primary) !important;
+  }
+  .el-overlay {
+    background-color: var(--bg-overlay) !important;
+  }
+
+  // Table
+  .el-table {
+    --el-table-bg-color: transparent;
+    --el-table-tr-bg-color: transparent;
+    --el-table-header-bg-color: var(--bg-card-solid);
+    --el-table-header-text-color: var(--text-secondary);
+    --el-table-row-hover-bg-color: var(--bg-card);
+    --el-table-border-color: var(--border-default);
+    --el-table-text-color: var(--text-primary);
+    color: var(--text-primary);
+  }
+  .el-table__header th.el-table__cell {
+    background: var(--bg-card-solid) !important;
+    color: var(--text-secondary) !important;
+    border-bottom: 1px solid var(--border-strong) !important;
+  }
+  .el-table__row td.el-table__cell {
+    background: transparent !important;
+    border-bottom: 1px solid var(--border-muted) !important;
+  }
+
+  // Progress
+  .el-progress-bar__outer {
+    background-color: var(--border-muted) !important;
+  }
+
+  // Alert
+  .el-alert--warning {
+    --el-alert-bg-color: var(--status-warning-soft);
+    --el-alert-title-color: var(--status-warning);
+  }
+  .el-alert--info {
+    --el-alert-bg-color: var(--status-info-soft);
+    --el-alert-title-color: var(--status-info);
+  }
+  .el-alert--success {
+    --el-alert-bg-color: var(--status-success-soft);
+    --el-alert-title-color: var(--status-success);
+  }
+  .el-alert--error {
+    --el-alert-bg-color: var(--status-danger-soft);
+    --el-alert-title-color: var(--status-danger);
+  }
+
+  // Menu
+  .el-menu {
+    --el-menu-bg-color: transparent;
+    --el-menu-text-color: var(--text-secondary);
+    --el-menu-hover-bg-color: var(--brand-primary-fade);
+    --el-menu-hover-text-color: var(--brand-primary);
+    --el-menu-active-color: var(--brand-primary);
+    --el-menu-border-color: transparent;
+    border-bottom: none !important;
+  }
+  .el-menu-item {
+    color: var(--text-secondary) !important;
+  }
+  .el-menu-item:hover {
+    background: var(--brand-primary-fade) !important;
+    color: var(--brand-primary) !important;
+  }
+  .el-menu-item.is-active {
+    color: var(--brand-primary) !important;
+    border-bottom: 2px solid var(--brand-primary) !important;
+  }
+
+  // Switch
+  .el-switch {
+    --el-switch-off-color: var(--border-strong);
+    --el-switch-on-color: var(--brand-primary);
+  }
+
+  // Collapse
+  .el-collapse {
+    --el-collapse-header-bg-color: transparent;
+    --el-collapse-content-bg-color: transparent;
+    border-top: 1px solid var(--border-muted) !important;
+  }
+  .el-collapse-item__header {
+    color: var(--text-secondary) !important;
+    background: transparent !important;
+    border-bottom: 1px solid var(--border-muted) !important;
+  }
+  .el-collapse-item__wrap {
+    background: transparent !important;
+    border-bottom: 1px solid var(--border-muted) !important;
+  }
+  .el-collapse-item__content {
+    color: var(--text-secondary) !important;
+  }
+
+  // Radio Button
+  .el-radio-button__inner {
+    background: var(--bg-input) !important;
+    border-color: var(--border-default) !important;
+    color: var(--text-secondary) !important;
+    box-shadow: none !important;
+  }
+  .el-radio-button__original-radio:checked + .el-radio-button__inner {
+    background: var(--brand-primary-soft) !important;
+    border-color: var(--brand-primary) !important;
+    color: var(--brand-primary) !important;
+    box-shadow: -1px 0 0 0 var(--brand-primary) !important;
+  }
+
+  // Message / Notification
+  .el-message,
+  .el-notification {
+    background: var(--bg-elevated) !important;
+    border: 1px solid var(--border-default) !important;
+    color: var(--text-primary) !important;
+  }
+}
+
+// ── 亮主题 EP 覆盖 ──
+[data-theme="light"] {
+  .el-button--primary {
+    --el-button-bg-color: var(--brand-primary);
+    --el-button-border-color: var(--brand-primary);
+    --el-button-hover-bg-color: var(--brand-primary-hover);
+    --el-button-hover-border-color: var(--brand-primary-hover);
+    --el-button-text-color: #ffffff;
+  }
+  // Primary link button (e.g. table row "详情"): use muted tone in light for visual quietness
+  .el-button--primary.is-link {
+    --el-button-text-color: var(--text-muted);
+  }
+  .el-button--primary.is-link:hover {
+    --el-button-text-color: var(--text-secondary);
+  }
+  .el-button--success {
+    --el-button-bg-color: var(--status-success);
+    --el-button-border-color: var(--status-success);
+  }
+  .el-button--warning {
+    --el-button-bg-color: var(--brand-accent);
+    --el-button-border-color: var(--brand-accent);
+  }
+  .el-button--danger {
+    --el-button-bg-color: var(--status-danger);
+    --el-button-border-color: var(--status-danger);
+  }
+
+  .el-tag--success {
+    --el-tag-bg-color: var(--status-success-soft);
+    --el-tag-text-color: var(--status-success);
+    --el-tag-border-color: var(--status-success);
+  }
+  .el-tag--warning {
+    --el-tag-bg-color: var(--status-warning-soft);
+    --el-tag-text-color: var(--status-warning);
+    --el-tag-border-color: var(--status-warning);
+  }
+  .el-tag--danger {
+    --el-tag-bg-color: var(--status-danger-soft);
+    --el-tag-text-color: var(--status-danger);
+    --el-tag-border-color: var(--status-danger);
+  }
+  .el-tag--info {
+    --el-tag-bg-color: var(--status-info-soft);
+    --el-tag-text-color: var(--status-info);
+    --el-tag-border-color: var(--status-info);
+  }
+  .el-tag--primary {
+    --el-tag-bg-color: var(--brand-primary-soft);
+    --el-tag-text-color: var(--brand-primary);
+    --el-tag-border-color: var(--brand-primary);
+  }
+
+  .el-dialog,
+  .el-drawer {
+    background: var(--bg-elevated) !important;
+    box-shadow: var(--shadow-modal) !important;
+  }
+
+  .el-overlay {
+    background-color: var(--bg-overlay) !important;
+  }
+
+  .el-table {
+    --el-table-bg-color: #ffffff;
+    --el-table-tr-bg-color: #ffffff;
+    --el-table-header-bg-color: #f1f5f9;
+    --el-table-header-text-color: var(--text-secondary);
+    --el-table-row-hover-bg-color: #f7fafc;
+    --el-table-border-color: var(--border-default);
+    --el-table-text-color: var(--text-primary);
+  }
+}

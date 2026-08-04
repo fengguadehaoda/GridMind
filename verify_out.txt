@@ -1,0 +1,22 @@
+STEP1: All imports OK
+[32m2026-08-03 22:06:43.191[0m | [1mINFO    [0m | [36mcore.kg_client[0m:[36m_select_backend[0m:[36m417[0m - [1mKGClient: neo4j_enabled=False，使用 NetworkXBackend（M0 默认）[0m
+[32m2026-08-03 22:06:43.456[0m | [1mINFO    [0m | [36mcore.knowledge_graph[0m:[36m_load_from_db[0m:[36m188[0m - [1mKnowledgeGraph loaded: 88 entities, 408 relations[0m
+[32m2026-08-03 22:06:43.456[0m | [1mINFO    [0m | [36mcore.kg_client[0m:[36m__init__[0m:[36m410[0m - [1mKGClient 初始化：backend=networkx[0m
+STEP2: client backend=networkx
+STEP3: 3 new methods exist
+[32m2026-08-03 22:06:43.468[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[424] pending: type=event entity=template:fault_chain_v1 thread=None[0m
+[32m2026-08-03 22:06:43.477[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[425] pending: type=event entity=template:multi_hop_v1 thread=None[0m
+[32m2026-08-03 22:06:43.486[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[426] pending: type=event entity=template:find_devices_v1 thread=None[0m
+[32m2026-08-03 22:06:43.494[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[427] pending: type=event entity=template:regulations_v1 thread=None[0m
+[32m2026-08-03 22:06:43.502[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[428] pending: type=event entity=template:causal_chain_v1 thread=None[0m
+[32m2026-08-03 22:06:43.511[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[429] pending: type=event entity=template:mandates_v1 thread=None[0m
+[32m2026-08-03 22:06:43.520[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[430] pending: type=event entity=template:device_subgraph_v1 thread=None[0m
+[32m2026-08-03 22:06:43.528[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[431] pending: type=event entity=template:fault_subgraph_v1 thread=None[0m
+[32m2026-08-03 22:06:43.536[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[432] pending: type=event entity=template:applicable_procedures_v1 thread=None[0m
+[32m2026-08-03 22:06:43.545[0m | [34m[1mDEBUG   [0m | [36mapi.services.sync_log_service[0m:[36mwrite_pending[0m:[36m113[0m - [34m[1msync_log[433] pending: type=event entity=template:impact_analysis_v1 thread=None[0m
+[32m2026-08-03 22:06:43.547[0m | [34m[1mDEBUG   [0m | [36mcore.kg_client[0m:[36mexecute_template[0m:[36m616[0m - [34m[1mexecute_template: NetworkX backend, returning empty list for name=fault_chain_v1[0m
+STEP4: execute_template returned: []
+STEP5: expand_with_optimizer: entities=81 paths=5
+STEP6: apply_rules (default off): 0 relations
+STEP7: optimizer top_k=5, max_hops=5
+=== ALL CHECKS PASSED ===

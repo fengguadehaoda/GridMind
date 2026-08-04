@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180" role="img" aria-label="灵枢电网 GridMind">
+  <!-- Apple touch icon 适配：iOS 自动圆角，这里用 safe area 中心放置 -->
+  <rect width="180" height="180" rx="36" fill="#0a1228"/>
+  <!-- 加大六边形 -->
+  <g transform="translate(36, 36)">
+    <polygon points="54,8 98,32 98,80 54,104 10,80 10,32" fill="none" stroke="#00E5FF" stroke-width="4" stroke-linejoin="round"/>
+    <polygon points="54,24 84,42 84,72 54,90 24,72 24,42" fill="rgba(0, 229, 255, 0.08)" stroke="#00E5FF" stroke-width="2" stroke-opacity="0.4" stroke-linejoin="round"/>
+    <path d="M54 36 L72 64 L54 76 L36 64 Z" fill="#00E5FF"/>
+    <circle cx="54" cy="56" r="5" fill="#FFB300"/>
+    <circle cx="54" cy="8" r="3" fill="#00E5FF"/>
+    <circle cx="98" cy="32" r="3" fill="#00E5FF" fill-opacity="0.6"/>
+    <circle cx="98" cy="80" r="3" fill="#FFB300"/>
+    <circle cx="54" cy="104" r="3" fill="#00E5FF" fill-opacity="0.6"/>
+    <circle cx="10" cy="80" r="3" fill="#00E5FF" fill-opacity="0.6"/>
+    <circle cx="10" cy="32" r="3" fill="#00E5FF"/>
+  </g>
+</svg>

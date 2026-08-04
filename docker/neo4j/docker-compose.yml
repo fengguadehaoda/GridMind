@@ -1,0 +1,46 @@
+# GridMind Neo4j 5.x Community 容器化部署
+# ----------------------------------------------------------------------------
+# 启动方式（在仓库根目录执行）：
+#   docker compose -f docker/neo4j/docker-compose.yml up -d
+#   python scripts/start_neo4j.py   # 一键启动 + 健康检查
+#   python scripts/stop_neo4j.py    # 优雅停止
+# 访问：
+#   HTTP Browser: http://localhost:7474
+#   Bolt:         bolt://localhost:7687
+# 数据卷：
+#   ./docker-data/neo4j   (相对 docker/neo4j/ 目录，已 gitignore)
+# ----------------------------------------------------------------------------
+
+services:
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: gridmind-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"   # HTTP Browser
+      - "7687:7687"   # Bolt
+    volumes:
+      # 持久化图谱数据（./docker-data/neo4j 相对 docker-compose.yml 所在目录）
+      - ./docker-data/neo4j/data:/data
+      - ./docker-data/neo4j/logs:/logs
+      - ./docker-data/neo4j/import:/var/lib/neo4j/import
+      - ./docker-data/neo4j/plugins:/plugins
+    environment:
+      # 鉴权（M0 阶段单一 admin 账户；M1+ 拆分 read-only / read-write）
+      - NEO4J_AUTH=neo4j/gridmind-dev
+      # 关闭强约束（社区版无法做 causal cluster）
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      # 内存（开发环境默认 1G heap + 512M pagecache，避免 8G 内存机器被吃满）
+      - NEO4J_dbms_memory_heap_max__size=1G
+      - NEO4J_dbms_memory_pagecache_size=512M
+      # 默认数据库名（M0 单库）
+      - NEO4J_default__database=neo4j
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "wget -qO- http://localhost:7474 || exit 1"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

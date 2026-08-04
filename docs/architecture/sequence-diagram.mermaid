@@ -1,0 +1,52 @@
+%% Sequence Diagram 1: 模板渲染调用链（含降级路径）
+sequenceDiagram
+    autonumber
+    actor Caller as MCP Tool Caller<br/>(kg_multi_hop_reason)
+    participant Tool as kg_reasoning_tools.py
+    participant Client as KGClient
+    participant Reg as CypherTemplateRegistry
+    participant Valid as CypherInjectionDetector
+    participant Backend as Neo4j / NetworkX
+    participant Audit as SyncLogService
+
+    Caller->>Tool: kg_multi_hop_reason(seed_ids, hops=4)
+    activate Tool
+
+    Tool->>Client: expand_with_optimizer(seeds, hops, ...)
+    activate Client
+
+    Client->>Reg: render("fault_chain_v1", {fault_id, max_hops=4})
+    activate Reg
+
+    alt 模板未注册
+        Reg-->>Client: raise TemplateNotFound
+        Client->>Client: fallback to M2 inline cypher<br/>(mcp_tools/tools/neo4j_tools.py::get_fault_chain)
+    else 模板被禁用
+        Reg-->>Client: raise TemplateDisabled
+        Client->>Client: fallback to M2 inline cypher
+    else 模板命中
+        Reg->>Valid: check({fault_id, max_hops})
+        alt 参数含注入特征
+            Valid-->>Reg: raise CypherInjectionRisk
+            Reg-->>Client: raise
+            Client-->>Tool: raise
+            Tool-->>Caller: return error
+        else 参数安全
+            Valid-->>Reg: OK
+            Reg->>Reg: 选最新 version="1.0"
+            Reg-->>Client: (cypher, params)
+        end
+    end
+
+    deactivate Reg
+
+    Client->>Backend: cypher_query(cypher, params)
+    activate Backend
+    Backend-->>Client: rows
+    deactivate Backend
+
+    Client->>Audit: log_event("template_render", {name, version, latency})
+    deactivate Client
+
+    Tool-->>Caller: {entities, paths, backend, latency_ms}
+    deactivate Tool

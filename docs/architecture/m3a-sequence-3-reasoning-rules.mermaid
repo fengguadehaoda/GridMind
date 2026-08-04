@@ -1,0 +1,52 @@
+%% M3a Sequence Diagram 3: 推理规则执行链（含 5s 超时守护）
+sequenceDiagram
+    autonumber
+    actor Caller as MCP Tool<br/>(kg_apply_rules)
+    participant Eng as ReasoningRulesEngine
+    participant Client as KGClient
+    participant Rules as InferenceRule 列表
+    participant Timer as threading.Timer
+    participant Audit as SyncLogService
+
+    Caller->>Eng: infer(entity_id="E-001", ctx={duration_min: 45, temp_c: 105})
+    activate Eng
+
+    Eng->>Eng: _filter_rules(rule_ids=None)<br/>+ sort by priority ASC
+    Eng->>Client: get_entity("E-001")
+    Client-->>Eng: entity{entity_type: "Overload"}
+    Eng->>Client: expand_entities(["E-001"], hops=1)
+    Client-->>Eng: [n1, n2, n3]
+
+    loop 对每条启用的规则（按 priority）
+        Eng->>Rules: rule = _rules[rid]
+
+        alt 规则 1: overload_to_overtemp_v1 (priority=10)
+            Eng->>Timer: Timer(5.0, target=_eval)
+            activate Timer
+            Timer->>Rules: rule.condition(entity, ctx)
+            Note over Rules: _is_overload(entity, ctx)<br/>= (entity_type=="Overload" and duration_min=45>30)<br/>= True
+            Rules-->>Timer: True
+            deactivate Timer
+            Eng->>Eng: append InferredRelation(<br/>  src=E-001, tgt=n1, type=CAUSES,<br/>  confidence=0.85, rule_id=overload_to_overtemp_v1<br/>)
+        else 规则 2: overtemp_to_insulation_v1 (priority=10)
+            Eng->>Timer: Timer(5.0, target=_eval)
+            Timer->>Rules: rule.condition(entity, ctx)
+            Note over Rules: _is_overtemp(entity, ctx)<br/>= (entity_type=="Overtemp" and temp_c=105>95)<br/>= False (entity_type 不匹配)
+            Rules-->>Timer: False
+            Eng->>Eng: skip
+        else 规则 N: 长耗时规则
+            Eng->>Timer: Timer(5.0, target=_eval)
+            Timer->>Rules: rule.condition(entity, ctx)
+            Note over Rules: 死循环 / 长计算 → 5s 未返回
+            Timer-->>Eng: is_alive()=True
+            Eng->>Timer: cancel()
+            Eng->>Audit: log_event("rule_timeout", {rule_id, entity_id})
+            Eng->>Eng: skip 该规则，继续下一条
+        end
+    end
+
+    Eng->>Eng: _dedupe(results)<br/>同 (src, tgt, type) 保留 confidence 最高
+    Eng->>Eng: min_confidence=0.0 过滤
+    Eng->>Eng: limit[:1000]
+    Eng-->>Caller: list[InferredRelation]
+    deactivate Eng

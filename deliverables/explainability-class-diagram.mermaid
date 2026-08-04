@@ -1,0 +1,78 @@
+classDiagram
+    class DiagnosisOrchestrator {
+        -mechanical_checker: MechanicalChecker
+        -rules_guard: RulesGuard
+        +fuse(llm_output, telemetry_ctx, user_msg) DiagnosisFusionResult
+        -_detect_conflict(llm, mc) bool
+        -_merge_severity(llm, mc, rg) str
+        -_decide_action(llm, mc, rg) str
+    }
+
+    class MechanicalChecker {
+        +check_all(device_id, telemetry, device_info) MechanicalCheckResult
+        -_overload_check(t, device) MechanicalCheckItem
+        -_short_circuit_check(t, device) MechanicalCheckItem
+        -_power_flow_check(t, device) MechanicalCheckItem
+        -_voltage_check(t, device) MechanicalCheckItem
+        -_temperature_check(t, device) MechanicalCheckItem
+    }
+
+    class RulesGuard {
+        -_rules: list~Rule~
+        -_version: str
+        -_mtime: float
+        +scan(context) RulesGuardResult
+        -_match_keyword(rule, ctx) TriggeredRule?
+        -_eval_condition(rule, ctx) TriggeredRule?
+        -_maybe_reload() None
+    }
+
+    class DiagnosisOutput {
+        +fault_type: str
+        +fault_location: str
+        +confidence: float
+        +evidence_refs: list~EvidenceRef~
+        +reasoning_text: str
+        +severity: str
+    }
+
+    class MechanicalCheckResult {
+        +device_id: str
+        +checks: list~MechanicalCheckItem~
+        +overall_pass: bool
+        +critical_failures: int
+        +contradicted_with_llm: bool
+    }
+
+    class RulesGuardResult {
+        +triggered: list~TriggeredRule~
+        +forced_hitl: bool
+        +forced_shutdown: bool
+    }
+
+    class DiagnosisFusionResult {
+        +llm_output: DiagnosisOutput
+        +mechanical_check: MechanicalCheckResult
+        +rules_guard: RulesGuardResult
+        +final_severity: str
+        +final_diagnosis: str
+        +requires_human_review: bool
+        +reasoning_chain: list~ReasoningStep~
+        +conflict_detected: bool
+    }
+
+    class SafetyRulesJson {
+        +version: str
+        +updated_at: str
+        +rules: list~Rule~
+    }
+
+    DiagnosisOrchestrator --> MechanicalChecker
+    DiagnosisOrchestrator --> RulesGuard
+    DiagnosisOrchestrator ..> DiagnosisFusionResult : produces
+    MechanicalChecker ..> MechanicalCheckResult : produces
+    RulesGuard ..> RulesGuardResult : produces
+    RulesGuard --> SafetyRulesJson : loads
+    DiagnosisFusionResult o-- DiagnosisOutput
+    DiagnosisFusionResult o-- MechanicalCheckResult
+    DiagnosisFusionResult o-- RulesGuardResult

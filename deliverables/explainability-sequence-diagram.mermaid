@@ -1,0 +1,46 @@
+sequenceDiagram
+    autonumber
+    actor U as 调度员
+    participant FE as MessageBubble
+    participant API as FastAPI/chat
+    participant SUP as Supervisor
+    participant D as diagnosis_agent
+    participant LLM as Qwen-Plus
+    participant OR as DiagnosisOrchestrator
+    participant MC as MechanicalChecker
+    participant RG as RulesGuard
+    participant FS as safety_rules.json
+
+    U->>FE: 输入 "TR-001 异常吗？"
+    FE->>API: POST /chat
+    API->>SUP: 路由请求
+    SUP->>D: 路由到 diagnosis_agent
+    D->>LLM: 调用诊断工具 + 发送 prompt
+    LLM-->>D: ```diagnosis {...}``` 围栏
+    D->>D: 解析 → DiagnosisOutput
+    Note over D,LLM: 解析失败 fallback 自由文本 + warning
+
+    D->>OR: fuse(llm_output, telemetry_ctx, user_msg)
+    par 并行（asyncio.gather）
+        OR->>MC: check_all(device_id, telemetry, device_info)
+        MC->>MC: 5 种轻量校验（OC/SC/PF/VL/OT）
+        MC-->>OR: MechanicalCheckResult
+    and
+        OR->>RG: scan(context)
+        RG->>FS: 读取（带 mtime 检查）
+        RG->>RG: 关键词 + 条件匹配
+        RG-->>OR: RulesGuardResult
+    end
+
+    OR->>OR: 冲突检测 + 严重度融合 + 动作决策
+    OR-->>D: DiagnosisFusionResult
+    D->>API: 返回 + reasoning_chain metadata
+    API-->>FE: SSE 流式 (token + done + reasoning_chain)
+
+    alt 规则触发 force_shutdown / hitl_required
+        FE->>U: 立即弹出 HITL 确认框（不等用户展开）
+    end
+
+    U->>FE: 点击 "🔍 查看推理过程"
+    FE->>FE: 展开 ReasoningChainPanel
+    Note over FE,U: 三层折叠面板（顶层/中层/底层）<br/>点击 evidence 跳转设备详情 / 知识片段

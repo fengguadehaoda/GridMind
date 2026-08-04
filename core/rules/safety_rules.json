@@ -1,0 +1,164 @@
+{
+  "version": "1.0.0",
+  "updated_at": "2026-01-15",
+  "description": "GridMind 三层可解释性架构 P0 阶段种子规则库。覆盖安规条款、倒闸操作、紧急阈值三大类。修改后 5 分钟内热加载生效。",
+  "rules": [
+    {
+      "id": "OT-001",
+      "source": "emergency_threshold",
+      "code": "DL/T-572-2010-2",
+      "title": "主变油温 > 95℃ 必须立即停电",
+      "match": {
+        "type": "condition",
+        "field": "telemetry.temperature",
+        "operator": ">",
+        "value": 95,
+        "device_type_in": ["transformer"]
+      },
+      "action": "force_shutdown",
+      "severity": "critical",
+      "description": "依据 DL/T 572-2010 第 5.2.3 条，顶层油温超过 95℃ 应立即减载或停运。"
+    },
+    {
+      "id": "OT-002",
+      "source": "emergency_threshold",
+      "code": "DL/T-572-2010-2",
+      "title": "主变油温 > 85℃ 触发高危告警",
+      "match": {
+        "type": "condition",
+        "field": "telemetry.temperature",
+        "operator": ">",
+        "value": 85,
+        "device_type_in": ["transformer"]
+      },
+      "action": "hitl_required",
+      "severity": "critical",
+      "description": "顶层油温超过 85℃ 应加强监测并准备减载。"
+    },
+    {
+      "id": "OC-001",
+      "source": "emergency_threshold",
+      "code": "GB/T-1094.7-2016",
+      "title": "电流 > 1.5×额定值 触发强制人工复核",
+      "match": {
+        "type": "condition",
+        "field": "telemetry.current_load",
+        "operator": ">",
+        "ratio_field": "device.rated_current",
+        "ratio": 1.5
+      },
+      "action": "hitl_required",
+      "severity": "critical",
+      "description": "依据 GB/T 1094.7-2016 变压器过载运行限制，电流超 1.5 倍额定值时须立即减载或停运。"
+    },
+    {
+      "id": "OC-002",
+      "source": "emergency_threshold",
+      "code": "GB/T-1094.7-2016",
+      "title": "电流 > 1.2×额定值 触发告警",
+      "match": {
+        "type": "condition",
+        "field": "telemetry.current_load",
+        "operator": ">",
+        "ratio_field": "device.rated_current",
+        "ratio": 1.2
+      },
+      "action": "warn",
+      "severity": "warning",
+      "description": "电流超过 1.2 倍额定值时进入预警状态。"
+    },
+    {
+      "id": "SC-001",
+      "source": "emergency_threshold",
+      "code": "DL/T-584-2017",
+      "title": "短路电流 > 1.2×预期值 触发告警",
+      "match": {
+        "type": "condition",
+        "field": "mechanical.short_circuit_ratio",
+        "operator": ">",
+        "value": 1.2
+      },
+      "action": "hitl_required",
+      "severity": "warning",
+      "description": "短路电流实测值与铭牌阻抗推算预期值偏差超过 20% 时，须校验阻抗与保护配置。"
+    },
+    {
+      "id": "SF-001",
+      "source": "safety_regulation",
+      "code": "DL/T-572-2010-1",
+      "title": "倒闸操作必须持有有效操作票",
+      "match": {
+        "type": "keyword",
+        "keywords": ["倒闸", "分合闸", "操作票", "无票"]
+      },
+      "action": "hitl_required",
+      "severity": "critical",
+      "description": "依据 DL/T 572-2010 第 4.3.2 条，严禁无票操作；所有倒闸操作须持有经审核的操作票。"
+    },
+    {
+      "id": "SF-002",
+      "source": "safety_regulation",
+      "code": "DL/T-572-2010-4",
+      "title": "检修工作必须办理工作票",
+      "match": {
+        "type": "keyword",
+        "keywords": ["检修", "工作票", "维护"]
+      },
+      "action": "hitl_required",
+      "severity": "warning",
+      "description": "依据 DL/T 572-2010 第 5.1.1 条，检修工作必须办理工作票，工作票有效期不超过 7 天。"
+    },
+    {
+      "id": "SF-003",
+      "source": "safety_regulation",
+      "code": "DL/T-572-2010-1",
+      "title": "严禁无票操作",
+      "match": {
+        "type": "keyword",
+        "keywords": ["无票操作", "强行操作", "违规操作"]
+      },
+      "action": "force_shutdown",
+      "severity": "critical",
+      "description": "依据 DL/T 572-2010 第 4.3.2 条，无票操作属于严重违规，须立即阻断并上报。"
+    },
+    {
+      "id": "GD-001",
+      "source": "safety_regulation",
+      "code": "DL/T-572-2010-3",
+      "title": "验电与接地线装设",
+      "match": {
+        "type": "keyword",
+        "keywords": ["验电", "接地线", "装设接地"]
+      },
+      "action": "hitl_required",
+      "severity": "warning",
+      "description": "依据 DL/T 572-2010 第 4.4.1 条，停电设备必须三相验电确认无电压后方可装设接地线。"
+    },
+    {
+      "id": "MS-001",
+      "source": "operation_procedure",
+      "code": "GIRD-OPS-001",
+      "title": "LLM 与机理结论矛盾时强制人工复核",
+      "match": {
+        "type": "fusion",
+        "condition": "conflict_detected == true"
+      },
+      "action": "hitl_required",
+      "severity": "critical",
+      "description": "若 LLM 判定与机理校验结论矛盾（如 LLM 说正常但机理触发 critical），强制人工复核——这是 PRD §6 AC-2 关键验收点。"
+    },
+    {
+      "id": "HI-001",
+      "source": "operation_procedure",
+      "code": "GIRD-OPS-002",
+      "title": "同设备 24 小时内已派 2 次工单触发上级督导",
+      "match": {
+        "type": "keyword",
+        "keywords": ["频繁派单", "重复工单", "升级"]
+      },
+      "action": "escalate_supervisor",
+      "severity": "warning",
+      "description": "同一设备 24 小时内已派 2 次工单时，应升级至值班长督导，避免重复派发。"
+    }
+  ]
+}

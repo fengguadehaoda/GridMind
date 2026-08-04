@@ -1,0 +1,132 @@
+classDiagram
+    class Settings {
+        +neo4j_enabled: bool = False
+        +neo4j_uri: str
+        +neo4j_user: str
+        +neo4j_password: str
+        +neo4j_database: str
+    }
+
+    class KGBackend {
+        <<Protocol>>
+        +get_entity(id) dict
+        +search_entities(q, limit, type_filter) list
+        +get_relations(id, type) list
+        +expand_entities(seeds, hops) tuple
+        +cypher_query(q, params) list
+        +ping() bool
+        +close() None
+    }
+
+    class NetworkXBackend {
+        -graph: nx.DiGraph
+        +get_entity(id) dict
+        +search_entities(q, limit, type_filter) list
+        +get_relations(id, type) list
+        +expand_entities(seeds, hops) tuple
+        +cypher_query() NotImplementedError
+        +ping() True
+        +close() None
+    }
+
+    class Neo4jBackend {
+        -driver: neo4j.Driver
+        -database: str
+        +get_entity(id) dict
+        +search_entities(q, limit, type_filter) list
+        +get_relations(id, type) list
+        +expand_entities(seeds, hops) tuple
+        +cypher_query(q, params) list
+        +ping() bool
+        +close() None
+        -_run(query, params) Result
+        -_classify_entity(node) dict
+    }
+
+    class KGClient {
+        <<Singleton>>
+        -backend: KGBackend
+        -failure_count: int
+        -last_health_check: float
+        -health_check_interval: float
+        +get_entity(id) dict
+        +search_entities(q, limit) list
+        +get_relations(id, type) list
+        +expand_entities(seeds, hops) tuple
+        +cypher_query(q, params) list
+        +_select_backend() KGBackend
+        +_try_recover_neo4j() bool
+        +_demote_to_networkx() None
+    }
+
+    class KnowledgeGraph {
+        <<Legacy, kept for compat>>
+        -graph: nx.DiGraph
+        +get_entity(id) GraphEntity
+        +search_entities(q, type_filter) list
+        +get_relations(id) list
+        +expand_entities(seeds, hops) tuple
+        +get_all_entities() list
+        +add_entity(e) None
+        +add_relation(r) None
+        -_load_from_db() None
+    }
+
+    class KGMigrator {
+        <<Utility>>
+        -driver: neo4j.Driver
+        +migrate_all() MigrationReport
+        +migrate_from_sqlite() int
+        +migrate_from_networkx(kg) int
+        +verify_counts() bool
+        +log_migration(source, counts) None
+    }
+
+    class MigrationReport {
+        +source: str
+        +entities_migrated: int
+        +relations_migrated: int
+        +duration_s: float
+        +started_at: datetime
+        +finished_at: datetime
+        +success: bool
+    }
+
+    class GraphEntity {
+        <<Pydantic, existing>>
+        +id: str
+        +name: str
+        +type: str
+        +properties: dict
+    }
+
+    class GraphRelation {
+        <<Pydantic, existing>>
+        +source_id: str
+        +target_id: str
+        +relation_type: str
+    }
+
+    class KgMigrationLog {
+        <<SQLite Table, new>>
+        +id: int
+        +source: str
+        +entities_count: int
+        +relations_count: int
+        +started_at: datetime
+        +finished_at: datetime
+        +success: bool
+        +error_message: str
+    }
+
+    Settings --> KGClient : reads feature flag
+    KGBackend <|.. NetworkXBackend : implements
+    KGBackend <|.. Neo4jBackend : implements
+    KGClient o-- KGBackend : delegates
+    NetworkXBackend ..> GraphEntity : converts to dict
+    Neo4jBackend ..> GraphEntity : converts to dict
+    KnowledgeGraph ..> NetworkXBackend : wraps (compat shim)
+    KGMigrator ..> Neo4jBackend : writes via MERGE
+    KGMigrator ..> KnowledgeGraph : reads source data
+    KGMigrator ..> KgMigrationLog : logs to SQLite
+    KGMigrator ..> MigrationReport : returns

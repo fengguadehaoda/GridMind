@@ -1,0 +1,83 @@
+// ─── GridMind 共享设计令牌（与主题无关）───
+// 字体、字号、字重、间距、圆角、动效、z-index、clip-path、断点
+// 引入方式：vite.config.ts 通过 additionalData 注入每个 scss 入口
+
+// 字体族（按 PRD §3.2 + 架构 §3.3 合并命名空间）
+$font-display: 'Orbitron', '思源黑体', 'Source Han Sans CN', 'Microsoft YaHei', system-ui, sans-serif;
+$font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+$font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', '思源黑体', sans-serif;
+$font-cn: 'Inter', 'PingFang SC', 'Microsoft YaHei', '思源黑体', 'Source Han Sans CN', sans-serif;
+
+// 字号比例（基于 1.125 比例尺，PRD §3.2.2）
+$fs-xs: 11px;
+$fs-sm: 12px;
+$fs-md: 14px;
+$fs-lg: 16px;
+$fs-xl: 20px;
+$fs-2xl: 28px;
+$fs-3xl: 40px;
+
+// 字重
+$fw-regular: 400;
+$fw-medium: 500;
+$fw-semibold: 600;
+$fw-bold: 700;
+
+// 行高
+$lh-tight: 1.2;
+$lh-normal: 1.5;
+$lh-loose: 1.7;
+
+// 间距（4 的倍数）
+$space-1: 4px;
+$space-2: 8px;
+$space-3: 12px;
+$space-4: 16px;
+$space-5: 20px;
+$space-6: 24px;
+$space-8: 32px;
+$space-10: 40px;
+$space-12: 48px;
+
+// 圆角
+$radius-sm: 4px;
+$radius-md: 8px;
+$radius-lg: 12px;
+$radius-xl: 16px;
+$radius-pill: 999px;
+
+// 动效曲线（4 种标准曲线，PRD §3.6 + 架构 §7.7）
+$ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+$ease-in-out-cubic: cubic-bezier(0.65, 0, 0.35, 1);
+$ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+// 动效时长
+$dur-instant: 100ms;
+$dur-fast: 200ms;
+$dur-base: 300ms;
+$dur-slow: 500ms;
+
+// z-index 阶梯
+$z-base: 1;
+$z-dropdown: 100;
+$z-sticky: 200;
+$z-header: 300;
+$z-dialog: 1000;
+$z-toast: 2000;
+
+// 切角 clip-path（关键视觉语言）
+$clip-corner-sm: polygon(0 8px, 8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%);
+$clip-corner-md: polygon(0 12px, 12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%);
+$clip-corner-lg: polygon(0 20px, 20px 0, 100% 0, 100% calc(100% - 20px), calc(100% - 20px) 100%, 0 100%);
+// 六边形（StatHexagon 使用）
+$clip-hex: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+
+// 断点
+$bp-sm: 640px;
+$bp-md: 768px;
+$bp-lg: 1024px;
+$bp-xl: 1280px;
+
+// 栅格
+$grid-cell: 32px;
+$glass-blur: 12px;

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40" role="img" aria-label="GridMind">
+  <polygon points="20,2 36,11 36,29 20,38 4,29 4,11" fill="none" stroke="#0a1228" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M20 12 L26 24 L20 28 L14 24 Z" fill="#0a1228"/>
+  <circle cx="20" cy="20" r="2" fill="#0a1228"/>
+</svg>

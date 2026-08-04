@@ -1,0 +1,182 @@
+%% M3a Class Diagram (独立文件 · 与 kg-m3a-design.md §4.1 内容一致)
+classDiagram
+    class CypherTemplateRegistry {
+        -dict~str,TemplateEntry~ _templates
+        -dict~str,dict~str,str~~ _versions
+        -TemplateRegistryConfig _config
+        -CypherInjectionDetector _validator
+        -SyncLogService _audit
+        +get_instance() CypherTemplateRegistry
+        +register(name, cypher, version, description, category, required_params) None
+        +render(name, params, version) tuple~str,dict~
+        +list_templates(category) list~TemplateEntry~
+        +enable(name) None
+        +disable(name) None
+        +is_enabled(name) bool
+        +get_template(name, version) TemplateEntry
+    }
+
+    class TemplateEntry {
+        +str name
+        +str cypher
+        +str version
+        +datetime registered_at
+        +bool enabled
+        +list~str~ required_params
+        +str description
+        +str category
+    }
+
+    class TemplateRegistryConfig {
+        +bool enabled
+        +bool injection_check_enabled
+        +int max_templates
+    }
+
+    class CypherInjectionDetector {
+        -Pattern _forbidden_keywords
+        +check(params) None
+        +is_safe(value) bool
+    }
+
+    class KGPathOptimizer {
+        -int _max_hops
+        -int _cache_size
+        -int _top_k
+        -LRUCache~tuple,OptimizedResult~ _cache
+        -KGClient _client
+        +__init__(max_hops, cache_size, top_k, client) None
+        +estimate_cost(seed_count, hops, relation_count) PathCost
+        +expand(client, seed_ids, hops, relation_types, limit) tuple
+        +get_cache_stats() dict
+        +clear_cache() None
+    }
+
+    class PathCost {
+        +int hops
+        +int edge_count
+        +float estimated_latency_ms
+        +float confidence
+    }
+
+    class OptimizedPath {
+        +list~str~ nodes
+        +list~str~ relations
+        +PathCost cost
+        +str backend
+    }
+
+    class OptimizedResult {
+        +list~Entity~ entities
+        +list~OptimizedPath~ paths
+        +bool cache_hit
+    }
+
+    class ReasoningRulesEngine {
+        -dict~str,InferenceRule~ _rules
+        -KGClient _client
+        -int _max_rules
+        -float _default_timeout_s
+        -int _max_inferred
+        +__init__(max_rules, default_timeout_s, max_inferred, client) None
+        +add_rule(rule) None
+        +remove_rule(rule_id) None
+        +infer(entity_id, ctx, rule_ids, min_confidence) list~InferredRelation~
+        +list_rules(enabled_only) list~InferenceRule~
+        +enable(rule_id) None
+        +disable(rule_id) None
+        -_eval_with_timeout(rule, entity, ctx) bool
+        -_dedupe(relations) list~InferredRelation~
+    }
+
+    class InferenceRule {
+        +str rule_id
+        +str relation_type
+        +Callable condition
+        +float confidence
+        +str description
+        +int priority
+        +float timeout_s
+        +bool enabled
+    }
+
+    class InferredRelation {
+        +str src_id
+        +str tgt_id
+        +str relation_type
+        +float confidence
+        +str rule_id
+        +list~str~ evidence_path
+    }
+
+    class KGClient {
+        -Neo4jBackend _neo4j
+        -NetworkXBackend _networkx
+        -CypherTemplateRegistry _registry
+        -KGPathOptimizer _optimizer
+        -ReasoningRulesEngine _engine
+        +get_instance() KGClient
+        +current_backend_name() str
+        +get_entity(eid) dict
+        +search_entities(query, limit) list
+        +expand_entities(seed_ids, hops) tuple
+        +cypher_query(cypher, params) list
+        +execute_template(name, params, version) list
+        +expand_with_optimizer(seeds, hops, relation_types, limit) tuple
+        +apply_rules(entity_id, ctx) list~InferredRelation~
+    }
+
+    class KGMultiHopReasonInput {
+        +list~str~ seed_ids
+        +int hops
+        +list~str~ relation_types
+        +int top_k
+        +float min_confidence
+        +bool use_optimizer
+    }
+
+    class KGMultiHopReasonOutput {
+        +list~EntityRef~ entities
+        +list~OptimizedPathRef~ paths
+        +str backend
+        +float latency_ms
+        +bool cache_hit
+    }
+
+    class KGApplyRulesInput {
+        +str entity_id
+        +dict ctx
+        +list~str~ rule_ids
+        +float min_confidence
+    }
+
+    class KGApplyRulesOutput {
+        +list~InferredRelationRef~ inferred_relations
+        +list~str~ rules_fired
+        +int rules_total
+        +str backend
+        +float latency_ms
+    }
+
+    class SyncLogService {
+        +log_event(event_type, details) int
+        +log_rollback_event(reason) None
+        +get_recent(limit) list
+    }
+
+    CypherTemplateRegistry --> TemplateEntry : contains
+    CypherTemplateRegistry --> TemplateRegistryConfig : configured_by
+    CypherTemplateRegistry --> CypherInjectionDetector : validates_with
+    CypherTemplateRegistry --> SyncLogService : audits_to
+    KGPathOptimizer --> PathCost : produces
+    KGPathOptimizer --> OptimizedPath : produces
+    KGPathOptimizer --> OptimizedResult : returns
+    OptimizedResult --> OptimizedPath : aggregates
+    ReasoningRulesEngine --> InferenceRule : stores
+    ReasoningRulesEngine --> InferredRelation : produces
+    ReasoningRulesEngine --> SyncLogService : audits_to
+    KGClient --> CypherTemplateRegistry : uses
+    KGClient --> KGPathOptimizer : uses
+    KGClient --> ReasoningRulesEngine : uses
+    KGMultiHopReasonInput --> KGMultiHopReasonOutput : via tool
+    KGApplyRulesInput --> KGApplyRulesOutput : via tool
