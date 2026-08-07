@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant U as 用户
+    participant App as App.vue
+    participant MD as MenuDrawer.vue
+    participant REG as menuDrawerGroups.ts
+    participant EP as 复用控件 (HitlBadge 等)
+    participant R as vue-router
+
+    U->>App: 点击「菜单」按钮 (header-menu-trigger)
+    App->>App: menuOpen = true
+    App->>MD: v-model:menuOpen → open
+    MD->>MD: 渲染 el-drawer (direction=rtl, size=360px)
+    MD->>REG: 读取 groups + quickEntries
+    MD->>EP: 渲染 component 型 entry（主题/系统分组控件，零改动嵌入）
+    U->>MD: 输入关键词（P1-1 搜索）
+    MD->>MD: 过滤 filteredGroups（模糊匹配 label/keywords）
+    U->>MD: 点击 route 型 entry（如「系统总览」）
+    MD->>MD: close()（open=false）
+    MD->>R: router.push(entry.route)
+    R-->>App: 路由切换，Header 激活态更新
+    U->>MD: 点击 action 型 entry（如「新对话」）
+    MD->>MD: close()
+    MD->>EP: 执行 entry.action()（复用 store 行为）

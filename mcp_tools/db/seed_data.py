@@ -104,18 +104,49 @@ def _make_anomalous_readings(
     return values
 
 
-def seed_all() -> None:
-    """写入所有种子数据。幂等——先清空后写入。"""
+def seed_all(full_reset: bool = False) -> None:
+    """写入所有种子数据（B3 修复：默认**幂等 upsert**，不再清空知识库）。
+
+    Args:
+        full_reset: 是否恢复 V1.6 之前的"全表清空"行为。
+            - ``False``（默认）：**不清空** ``knowledge_chunks``，保护运营经
+              reload 热更新的自定义分片（V1.6 热更新设计）；8 条种子
+              doc-001..008 按 doc_id 先删后插（等价 ``INSERT OR REPLACE``——
+              doc_id 无 UNIQUE 约束，直接 OR REPLACE 无法去重）。其余 6 张
+              demo 表（devices/telemetry/inspections/safety_rules/
+              graph_entities/graph_relations）保留原有清空逻辑。
+            - ``True``：恢复旧行为，7 张表全部清空后重写（仅显式人工触发）。
+
+    Returns:
+        None
+    """
     conn = get_connection()
     try:
-        # 清空（反向依赖顺序，避免 FOREIGN KEY 冲突）
-        tables = [
-            "graph_relations", "graph_entities",
-            "knowledge_chunks", "safety_rules",
-            "inspections", "telemetry", "devices",
-        ]
+        if full_reset:
+            # 显式全量重置：7 表全清空（反向依赖顺序，避免 FOREIGN KEY 冲突）
+            tables = [
+                "graph_relations", "graph_entities",
+                "knowledge_chunks", "safety_rules",
+                "inspections", "telemetry", "devices",
+            ]
+        else:
+            # 默认：只清空 6 张 demo 表，**不碰** knowledge_chunks
+            tables = [
+                "graph_relations", "graph_entities",
+                "safety_rules",
+                "inspections", "telemetry", "devices",
+            ]
         for t in tables:
             conn.execute(f"DELETE FROM {t}")
+
+        # 知识库片段：幂等 upsert（B3）
+        # 仅按 8 条种子 doc_id 先删后插——等价 INSERT OR REPLACE 语义，
+        # 同时保留运营热更新写入的自定义分片（如 feature-intro:*）。
+        seed_doc_ids = [chunk[0] for chunk in KNOWLEDGE_CHUNKS]
+        conn.executemany(
+            "DELETE FROM knowledge_chunks WHERE doc_id = ?",
+            [(doc_id,) for doc_id in seed_doc_ids],
+        )
 
         # 1. 设备（含 P0 铭牌字段：rated_current / short_impedance / rated_voltage）
         conn.executemany(

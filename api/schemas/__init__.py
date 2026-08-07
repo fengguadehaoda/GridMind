@@ -84,6 +84,8 @@ class ChatResponse(BaseModel):
     interrupt_required: bool = False
     interrupt_node: str | None = None
     interrupt_msg: str | None = None
+    # Bug2 修复：演示模式剧本外响应标记（前端据此清审批态 + 展示提示）
+    is_demo_out_of_scope: bool = False
 
 
 class ThreadInfo(BaseModel):
@@ -176,7 +178,17 @@ class KnowledgeAnswer(BaseModel):
 # ═══════════════════════════════════════════════════════
 
 class AgentState(BaseModel):
-    """LangGraph Agent 的共享状态。"""
+    """LangGraph Agent 的共享状态。
+
+    V1.5.1 T03 新增 2 字段（``pause_signal`` / ``abort_signal``）——
+    用于 LangGraph checkpoint 持久化层正确序列化暂停/中止软信号。
+    Pydantic v2 默认 ``extra='ignore'`` 会静默丢弃未声明字段（含 ``__`` 开头），
+    因此必须**显式声明**这 2 字段才能让 ``aupdate_state`` 注入的软信号
+    在 ``ainvoke`` 节点入口可被读取（架构 §2.2.1 决策 #2 + §7.1.3）。
+    """
+
+    model_config = {"extra": "ignore"}
+
     messages: list[dict[str, Any]] = []
     current_agent: str | None = None
     next_agent: str | None = None
@@ -184,10 +196,21 @@ class AgentState(BaseModel):
     interrupt_action: InterruptAction | None = None
     interrupt_tool: str | None = None
     interrupt_args: dict[str, Any] | None = None
+    # HITL 弹窗修复：中断说明文案。此前仅存在于 graph.run() 的合成返回 dict 中，
+    # 未声明为状态字段 → 融合层（diagnosis fusion）触发的 HITL 无法把说明透传给
+    # ``/chat/stream`` 的 done 事件（``result.get("interrupt_msg")`` 恒为 None）。
+    interrupt_msg: str | None = None
     health_scores: list[HealthScoreResult] | None = None
     knowledge_answer: KnowledgeAnswer | None = None
     error: str | None = None
     pending_tool_plan: list[dict[str, Any]] | None = None
+    # Bug1 修复：前端 X-Display-Mode header 传入的显示模式
+    # （'standard' | 'presentation' | None=header 缺失，回退环境变量）
+    display_mode: str | None = None
+    # V1.5.1 T03：pause() 注入；节点入口检查，命中则 throw interrupt({type: user_pause})
+    pause_signal: dict[str, Any] | None = None
+    # V1.5.1 T03：abort() 注入（永久）；节点入口检查，命中则 throw interrupt({type: user_abort})
+    abort_signal: dict[str, Any] | None = None
 
 
 # ═══════════════════════════════════════════════════════
@@ -202,6 +225,17 @@ from api.schemas.hitl_edit import (  # noqa: E402, F401
     EditInterruptRequest,
     AuditLogEntry,
     SafetyRecheckResult,
+)
+
+# V1.5.1：会话控制（pause / resume / rewind / abort）+ Checkpoint 统计
+# re-export 自 ``api.schemas.session_control``（T01 新增子模块）
+from api.schemas.session_control import (  # noqa: E402, F401
+    RiskLevel,
+    PauseRequest,
+    ResumeRequest,
+    RewindRequest,
+    AbortRequest,
+    CheckpointStats,
 )
 
 
@@ -234,4 +268,11 @@ __all__ = [
     "EditInterruptRequest",
     "AuditLogEntry",
     "SafetyRecheckResult",
+    # V1.5.1 新增：会话控制 + Checkpoint 统计
+    "RiskLevel",
+    "PauseRequest",
+    "ResumeRequest",
+    "RewindRequest",
+    "AbortRequest",
+    "CheckpointStats",
 ]

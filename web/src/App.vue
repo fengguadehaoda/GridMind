@@ -1,150 +1,222 @@
 <template>
-  <el-container class="app-container">
-    <!-- 顶栏 — 赛博控制中心 HUD -->
+  <el-container
+    class="app-container"
+    :class="{
+      'app-container--compact': isCompact,
+      'app-container--large': isLarge,
+      'app-container--card-visible': statusCardVisible,
+      'app-container--card-expanded': statusCardVisible && !statusCardCollapsed,
+    }"
+  >
+    <!-- 顶栏 — 精简为 ≤5 元素（header-redesign T03）：
+         ①Logo ②主导航（5 路由 / compact 并入 NavDrawer 汉堡）
+         ③「菜单」按钮 ④帮助图标 ⑤「更多」折叠点（<768px fallback） -->
     <el-header class="app-header">
-      <!-- 左：Logo + 品牌名 -->
-      <div class="header-left">
+      <!-- ① 左：可点击 Logo + 品牌名（点回主页 /） -->
+      <router-link to="/" class="header-brand" data-test="header-brand" title="返回主页 · 智能对话">
         <LogoHorizontal :size="36" />
-      </div>
+      </router-link>
 
-      <!-- 中：水平导航 -->
-      <el-menu
-        class="app-nav"
-        mode="horizontal"
-        router
-        :default-active="route.path"
-        :ellipsis="false"
-      >
-        <el-menu-item index="/">
-          <el-icon><ChatDotRound /></el-icon>
-          智能对话
-        </el-menu-item>
-        <el-menu-item index="/monitor">
-          <el-icon><Monitor /></el-icon>
-          实时监控
-        </el-menu-item>
-      </el-menu>
+      <!-- ② 中：水平导航（standard/large 显示；compact 折叠为汉堡 NavDrawer） -->
+      <nav v-if="!isCompact" class="app-nav-wrap" data-test="header-nav">
+        <el-menu
+          class="app-nav"
+          mode="horizontal"
+          router
+          :default-active="route.path"
+          :ellipsis="true"
+        >
+          <el-menu-item index="/">
+            <el-icon><ChatDotRound /></el-icon>
+            智能对话
+          </el-menu-item>
+          <el-menu-item index="/monitor">
+            <el-icon><Monitor /></el-icon>
+            实时监控
+          </el-menu-item>
+          <el-menu-item index="/grayscale">
+            <el-icon><Histogram /></el-icon>
+            灰度面板
+          </el-menu-item>
+          <el-menu-item index="/audit">
+            <el-icon><Document /></el-icon>
+            HITL 审计
+          </el-menu-item>
+          <el-menu-item index="/system">
+            <el-icon><DataBoard /></el-icon>
+            系统总览
+          </el-menu-item>
+        </el-menu>
+      </nav>
+      <!-- compact：汉堡导航抽屉 -->
+      <NavDrawer v-if="isCompact" v-model="navOpen" />
 
-      <!-- 右侧：服务状态 + 状态条 + 主题切换 + 操作 -->
+      <!-- 右侧：④帮助图标 ③「菜单」按钮 ⑤「更多」折叠点（移动端） -->
       <div class="header-right">
-        <!-- 服务连接状态 -->
-        <div class="status-badge" :class="{ connected }">
-          <PulseDot :tone="connected ? 'success' : 'danger'" :size="8" :speed="1.8" />
-          <span class="status-text">{{ connected ? '服务已连接' : '服务未连接' }}</span>
-        </div>
+        <!-- ④ 帮助图标 -->
+        <el-tooltip content="帮助中心" placement="bottom" :show-after="200">
+          <button
+            type="button"
+            class="help-entry"
+            data-test="help-entry"
+            aria-label="打开帮助中心"
+            @click="goHelp"
+          >
+            <el-icon :size="16"><QuestionFilled /></el-icon>
+          </button>
+        </el-tooltip>
 
-        <!-- 状态条：CPU / MEM / 时钟 -->
-        <div class="status-strip">
-          <DataStreamBadge
-            label="CPU"
-            :value="cpuLoad.toFixed(0)"
-            unit="%"
-            :tone="cpuTone"
-            :pulse="true"
-          />
-          <DataStreamBadge
-            label="MEM"
-            :value="memLoad.toFixed(0)"
-            unit="%"
-            :tone="memTone"
-          />
-          <DataStreamBadge
-            label="AGT"
-            :value="agentCount"
-            :tone="agentCount > 0 ? 'success' : 'info'"
-          />
-          <DataStreamBadge
-            label="CLK"
-            :value="currentTime"
-            tone="accent"
-          />
-        </div>
+        <!-- ③ 「菜单」按钮（主按钮样式，触发右侧 MenuDrawer） -->
+        <button
+          type="button"
+          class="menu-trigger"
+          data-test="header-menu-trigger"
+          aria-label="打开菜单"
+          aria-haspopup="dialog"
+          @click="menuOpen = true"
+        >
+          <el-icon :size="16"><MenuIcon /></el-icon>
+          <span>菜单</span>
+        </button>
 
-        <!-- 主题切换 -->
-        <ThemeToggle size="md" />
-
-        <!-- 新对话 -->
-        <el-button size="small" class="ghost-btn" @click="store.resetChat()">
-          <el-icon><Refresh /></el-icon>
-          <span>新对话</span>
-        </el-button>
+        <!-- ⑤ 「更多」折叠点（<768px fallback：收纳新对话 / 知识库管理等溢出项） -->
+        <el-dropdown
+          v-if="isMobile"
+          trigger="click"
+          class="header-more"
+          data-test="header-more-trigger"
+          @command="onMoreCommand"
+        >
+          <button type="button" class="more-entry" aria-label="更多功能">
+            <el-icon :size="16"><MoreFilled /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu class="header-more-menu">
+              <el-dropdown-item command="new-chat" data-test="more-new-chat">新对话</el-dropdown-item>
+              <el-dropdown-item command="knowledge" data-test="more-knowledge">知识库管理</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </el-header>
 
     <!-- 主体 -->
     <el-main class="app-main">
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <transition name="fade-page" mode="out-in">
+          <component :is="Component" />
+        </transition>
+      </router-view>
     </el-main>
 
-    <!-- HITL 对话框（Edit & Continue 模式，三按钮：拒绝 / 仅批准 / 修改后批准） -->
-    <HitlEditDialog
-      v-model="showHitl"
-      :interrupt-node="store.interruptNode"
-      :interrupt-msg="store.interruptMsg"
-      :thread-id="store.pendingThreadId"
-      :interrupt-args="store.interruptArgs"
-      :busy="store.hitlBusy"
-      :safety-reject="store.hitlSafetyReject"
-      @approve="onApprove"
-      @reject="onReject"
-      @edit-approve="onEditApprove"
-    />
+    <!-- 全局返回主页浮动按钮（仅非主页显示；compact 图标化）
+         与 StatusFloatingCard 几何错开：卡片可见时上移 bottom:96px，展开时隐藏 -->
+    <transition name="fab-fade">
+      <router-link
+        v-if="route.path !== '/'"
+        to="/"
+        class="fab-home"
+        title="返回主页 · 智能对话"
+      >
+        <el-icon :size="20"><Back /></el-icon>
+        <span>主页</span>
+      </router-link>
+    </transition>
+
+    <!-- v1.5.0 T04：单页 tour（driver.js）— 监听路由 ?tour=xxx；零 DOM 输出 -->
+    <OnboardingTour v-if="!isPureOnboarding" />
+
+    <!-- ═══ header-redesign T03 全局挂载 ═══ -->
+    <!-- 右侧菜单抽屉（T01：视图/主题/系统/调试 分组收纳原 Header 入口） -->
+    <MenuDrawer v-model="menuOpen" />
+    <!-- 右下角浮动系统状态卡片（T02：折叠一行 CPU/内存/AIT/CLK，展开详情/趋势） -->
+    <StatusFloatingCard :connected="connected" />
+
+    <!-- ═══ v1.6.0 P1 全局挂载（保留） ═══ -->
+    <!-- P1-1：⌘K 命令面板 -->
+    <CommandPalette v-model:open="paletteOpen" scope="global" />
+    <!-- P1-2：? 快捷键速查浮层（自管理 open 状态） -->
+    <ShortcutsOverlay />
+    <!-- P1-3：Session 详情抽屉（sessionStats store 控制 open） -->
+    <SessionDetailDrawer />
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
-import { useRoute } from 'vue-router'
-import { Refresh, ChatDotRound, Monitor } from '@element-plus/icons-vue'
+import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import {
+  ChatDotRound,
+  Monitor,
+  Histogram,
+  Document,
+  DataBoard,
+  Back,
+  QuestionFilled,
+  Menu as MenuIcon,
+  MoreFilled,
+} from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { useChatStore } from './stores/chatStore'
+import { useAuditStore } from './stores/audit'
 import { healthCheck } from './api/chat'
-import HitlEditDialog from './components/HitlEditDialog.vue'
+import { useViewport } from './composables/useViewport'
+import { useStatusCard } from './composables/useStatusCard'
+// v1.5.1 T05 · F4 HITL 弹窗已从 App.vue 移至 ChatView.vue（架构 §3.4 + §5 T05）
 import LogoHorizontal from './components/brand/LogoHorizontal.vue'
-import ThemeToggle from './components/controls/ThemeToggle.vue'
-import PulseDot from './components/background/PulseDot.vue'
-import DataStreamBadge from './components/background/DataStreamBadge.vue'
+import CommandPalette from './components/controls/CommandPalette.vue'
+import ShortcutsOverlay from './components/controls/ShortcutsOverlay.vue'
+import SessionDetailDrawer from './components/controls/SessionDetailDrawer.vue'
+import NavDrawer from './components/controls/NavDrawer.vue'
+import MenuDrawer from './components/controls/MenuDrawer.vue'
+import StatusFloatingCard from './components/StatusFloatingCard.vue'
+import OnboardingTour from './components/onboarding/OnboardingTour.vue'
 import { useThemeStore } from './stores/theme'
+import { useDisplayStore } from './stores/display'
 
 const store = useChatStore()
 const themeStore = useThemeStore()
+const auditStore = useAuditStore()
+const displayStore = useDisplayStore()
 const route = useRoute()
+const router = useRouter()
 
-const showHitl = ref(false)
+// v1.6.0 P1-5：三档断点（large ≥1920 / standard 1280-1920 / compact ≤1279.98）
+// header-redesign T04：isMobile <768px（「更多」折叠点 fallback）
+const { isLarge, isCompact, isMobile } = useViewport()
+
+// header-redesign T02：状态卡片单例（显隐/折叠/数据/采样）
+const {
+  visible: statusCardVisible,
+  collapsed: statusCardCollapsed,
+  setServiceConnected: statusCardSetServiceConnected,
+  start: statusCardStart,
+  stop: statusCardStop,
+} = useStatusCard()
+
+// v1.6.0 P1-5：compact 断点强制背景降级为"标准模式"强度（不修改用户持久化偏好）
+watch(
+  isCompact,
+  (compact) => {
+    displayStore.setBgOverride(compact ? 'off' : null)
+  },
+  { immediate: true },
+)
+
+// P1-1：命令面板 open（由 CommandPalette 内 ⌘K 热键 emit 更新）
+const paletteOpen = ref(false)
+// P1-5：紧凑模式汉堡导航 open
+const navOpen = ref(false)
+// header-redesign T01：右侧菜单抽屉 open
+const menuOpen = ref(false)
+
+/** v1.5.0 T04：tour 在 wizard 视图页面跳过（避免无效的 popover 锚点） */
+const isPureOnboarding = computed(() => route.path === '/onboarding')
+
 const connected = ref(false)
 let healthTimer: ReturnType<typeof setInterval> | null = null
 
-// ── 顶栏状态条模拟数据（M1 阶段用模拟值，后续可接入后端 metrics）──
-const cpuLoad = ref(23)
-const memLoad = ref(41)
-const agentCount = ref(4)
-const currentTime = ref(formatTime(new Date()))
-
-let clockTimer: ReturnType<typeof setInterval> | null = null
-let metricsTimer: ReturnType<typeof setInterval> | null = null
-
-function formatTime(d: Date): string {
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-}
-
-function updateMetrics() {
-  // 模拟真实波动：CPU 18-40, MEM 35-55
-  cpuLoad.value = 18 + Math.random() * 22
-  memLoad.value = 35 + Math.random() * 20
-}
-
-const cpuTone = computed<'info' | 'warning' | 'danger'>(() => {
-  if (cpuLoad.value >= 85) return 'danger'
-  if (cpuLoad.value >= 60) return 'warning'
-  return 'info'
-})
-
-const memTone = computed<'info' | 'warning' | 'danger'>(() => {
-  if (memLoad.value >= 85) return 'danger'
-  if (memLoad.value >= 60) return 'warning'
-  return 'info'
-})
-
-// ── 健康检查 ──
+// ── 健康检查（CPU/MEM/AGT/CLK 模拟已迁入 useStatusCard，App.vue 不再持有）──
 async function checkHealth() {
   try {
     const resp = await healthCheck()
@@ -152,47 +224,53 @@ async function checkHealth() {
   } catch {
     connected.value = false
   }
+  // 服务连接状态同步进状态卡片单例（StatusCardData.serviceConnected）
+  statusCardSetServiceConnected(connected.value)
 }
 
-// ── HITL ──
-async function onApprove(reason: string) {
-  await store.decideHitl('approve', { rejectReason: reason })
-}
-async function onReject(reason: string) {
-  await store.decideHitl('reject', { rejectReason: reason })
-}
-async function onEditApprove(payload: {
-  editedArgs: Record<string, unknown>
-  editReason: string
-}) {
-  await store.approveWithEdit(payload.editedArgs, payload.editReason)
+// ── P1-2 帮助中心入口 ──
+function goHelp() {
+  void router.push('/help')
 }
 
-watch(() => store.interruptRequired, (v) => {
-  showHitl.value = v
-})
+// ── V1.7 KB Upload：知识库管理快捷入口（帮助中心 ?tab=knowledge 直达）──
+function goKnowledge() {
+  void router.push({ path: '/help', query: { tab: 'knowledge' } })
+}
+
+// ── header-redesign T04：「更多」折叠点命令（移动端 fallback）──
+function onMoreCommand(command: string | number | object): void {
+  if (command === 'new-chat') {
+    store.resetChat()
+    ElMessage.success('已新建对话')
+  } else if (command === 'knowledge') {
+    goKnowledge()
+  }
+}
+
+// ── HITL 三按钮 handler 已移至 ChatView.vue（架构 §3.4 + §5 T05）──
 
 onMounted(() => {
   // 主题初始化（读取 localStorage 或跟随系统）
   themeStore.init()
 
-  // 健康检查
-  checkHealth()
-  healthTimer = setInterval(checkHealth, 15000)
+  // v1.5.1 T04 · F3：audit store 首屏水合（启动 5s 轮询 + 拉取首次 pendingHitlCount）
+  auditStore.hydrate()
 
-  // 时钟
-  clockTimer = setInterval(() => {
-    currentTime.value = formatTime(new Date())
-  }, 1000)
+  // 健康检查（15s 轮询；结果同步状态卡片）
+  void checkHealth()
+  healthTimer = setInterval(() => {
+    void checkHealth()
+  }, 15000)
 
-  // 模拟指标
-  metricsTimer = setInterval(updateMetrics, 5000)
+  // header-redesign T02：启动状态卡片模拟（时钟 1s + 指标 5s + 采样；幂等）
+  statusCardStart()
 })
 
 onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer)
-  if (clockTimer) clearInterval(clockTimer)
-  if (metricsTimer) clearInterval(metricsTimer)
+  // header-redesign T02：停止状态卡片模拟（防泄漏）
+  statusCardStop()
 })
 </script>
 
@@ -232,19 +310,44 @@ onUnmounted(() => {
   opacity: 0.5;
 }
 
-.header-left {
+/* ── 左：可点击品牌 ────────────────────── */
+.header-brand {
   display: flex;
   align-items: center;
   flex-shrink: 0;
   min-width: 200px;
+  text-decoration: none;
+  color: inherit;
+  padding: 4px var(--space-2);
+  margin-left: calc(-1 * var(--space-2));
+  border-radius: var(--radius-md);
+  transition: background var(--dur-fast) var(--ease-out-quint);
+  cursor: pointer;
 }
 
-/* ── 水平导航 ─────────────────────────── */
+.header-brand:hover {
+  background: var(--brand-primary-soft, rgba(97, 92, 237, 0.08));
+}
+
+.header-brand:active {
+  background: var(--brand-primary-soft, rgba(97, 92, 237, 0.16));
+}
+
+/* ── 水平导航（header-redesign：包一层 wrap，compact 时整组隐藏）── */
+.app-nav-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
 .app-nav {
   background: transparent;
   border-bottom: none;
   flex: 1;
   min-width: 0;
+  /* Bug fix：与右侧操作区保持最小安全间距 */
+  margin-right: var(--space-4);
 }
 
 .app-nav :deep(.el-menu-item) {
@@ -258,7 +361,7 @@ onUnmounted(() => {
   font-weight: var(--fw-semibold);
 }
 
-/* ── 右侧 ─────────────────────────────────── */
+/* ── 右侧：帮助图标 + 菜单按钮 + 更多折叠点 ── */
 .header-right {
   display: flex;
   align-items: center;
@@ -266,46 +369,82 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.status-badge {
-  display: flex;
+/* v1.6.0 P1-2：帮助中心入口按钮（沿用） */
+.help-entry {
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: 4px var(--space-3);
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-md);
   background: var(--bg-card);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  letter-spacing: 0.05em;
-  transition: var(--theme-transition);
-}
-
-.status-badge .status-text {
-  color: var(--status-success);
-  font-weight: var(--fw-medium);
-}
-
-.status-badge:not(.connected) .status-text {
-  color: var(--status-danger);
-}
-
-.status-strip {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.ghost-btn {
-  background: var(--brand-primary-soft) !important;
-  border: 1px solid var(--border-default) !important;
-  color: var(--text-primary) !important;
+  color: var(--text-secondary);
+  cursor: pointer;
   transition: all var(--dur-fast) var(--ease-out-quint);
 }
 
-.ghost-btn:hover {
-  background: var(--brand-primary-soft) !important;
-  border-color: var(--brand-primary) !important;
-  color: var(--brand-primary) !important;
+.help-entry:hover {
+  color: var(--brand-primary);
+  border-color: var(--brand-primary);
+  box-shadow: var(--glow-primary-soft);
+}
+
+/* header-redesign T03：「菜单」主按钮 */
+.menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--brand-primary);
+  border-radius: var(--radius-md);
+  background: var(--brand-primary);
+  color: #fff;
+  font-family: var(--font-cn);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  user-select: none;
+  clip-path: var(--clip-corner-sm);
+  transition: all var(--dur-fast) var(--ease-out-quint);
+}
+
+.menu-trigger:hover {
+  background: var(--brand-primary-soft);
+  color: var(--brand-primary);
+  box-shadow: var(--glow-primary-soft);
+}
+
+.menu-trigger:active {
+  transform: scale(0.97);
+}
+
+.menu-trigger:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+
+/* header-redesign T04：「更多」折叠点（<768px fallback） */
+.more-entry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out-quint);
+}
+
+.more-entry:hover {
+  color: var(--brand-primary);
+  border-color: var(--brand-primary);
   box-shadow: var(--glow-primary-soft);
 }
 
@@ -313,7 +452,8 @@ onUnmounted(() => {
 .app-main {
   flex: 1;
   padding: 0;
-  overflow: hidden;
+  /* 全局主区启用滚动：内容短时不显示滚动条，内容溢出时可滚动（修复 /grayscale 被裁切且无法滚轮滚动） */
+  overflow: auto;
   max-width: 1280px;
   width: 100%;
   margin: 0 auto;
@@ -323,22 +463,111 @@ onUnmounted(() => {
   transition: var(--theme-transition);
 }
 
-/* ── 响应式 ───────────────────────────── */
-@media (max-width: 1024px) {
-  .status-strip {
-    display: none;
-  }
-  .app-nav {
-    display: none;
+/* v1.6.0 P1-5：large（≥1920）内容区放宽至 1600px */
+.app-container--large .app-main {
+  max-width: 1600px;
+}
+
+/* ── 全局返回主页 FAB（右下角悬浮；header-redesign §7.2 与状态卡片协调） ── */
+.fab-home {
+  position: fixed;
+  right: var(--space-6);
+  bottom: var(--space-6);
+  /* header-redesign：与状态卡片同层 z-sticky（原 z-header） */
+  z-index: var(--z-sticky);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  color: var(--text-primary);
+  text-decoration: none;
+  font-size: var(--fs-sm);
+  font-family: var(--font-cn);
+  letter-spacing: 0.05em;
+  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.15));
+  backdrop-filter: blur(10px);
+  transition: all var(--dur-fast) var(--ease-out-quint);
+}
+
+.fab-home:hover {
+  background: var(--brand-primary-soft);
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+  box-shadow: var(--glow-primary-soft);
+  transform: translateY(-2px);
+}
+
+.fab-home:active {
+  transform: translateY(0);
+}
+
+/* header-redesign §7.2：卡片可见 → FAB 上移（折叠卡片高约 44px + 间隙）；展开 → 隐藏 */
+.app-container--card-visible .fab-home {
+  right: 16px;
+  bottom: 96px;
+}
+
+.app-container--card-expanded .fab-home {
+  display: none;
+}
+
+/* FAB 进场动画 */
+.fab-fade-enter-active,
+.fab-fade-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.fab-fade-enter-from,
+.fab-fade-leave-to {
+  opacity: 0;
+  transform: translateY(12px) scale(0.92);
+}
+
+/* 路由切换淡入 */
+.fade-page-enter-active,
+.fade-page-leave-active {
+  transition: opacity 0.18s var(--ease-out-quint, ease);
+}
+.fade-page-enter-from,
+.fade-page-leave-to {
+  opacity: 0;
+}
+
+/* ── header-redesign T04：移动端响应式 ── */
+
+/* compact：Header 品牌宽度收窄，让位右侧操作区 */
+.app-container--compact .header-brand {
+  min-width: auto;
+}
+
+/* ≤1440px：导航项 padding 压紧，避免顶栏拥挤 */
+@media (max-width: 1440px) {
+  .app-nav :deep(.el-menu-item) {
+    padding: 0 var(--space-3);
   }
 }
 
+/* <768px：品牌收窄、Header padding 压缩、菜单按钮文字隐藏仅图标、FAB 图标化 */
 @media (max-width: 768px) {
-  .header-left {
+  .header-brand {
     min-width: auto;
   }
   .app-header {
     padding: 0 var(--space-3);
+  }
+  .menu-trigger span {
+    display: none;   /* 小屏只保留「菜单」图标 */
+  }
+  .menu-trigger {
+    padding: 0 var(--space-2);
+  }
+  .fab-home span {
+    display: none;   /* 小屏只保留图标 */
+  }
+  .fab-home {
+    padding: 12px;
   }
 }
 </style>

@@ -11,9 +11,20 @@ sse-starlette>=2.0.0
 # --- LangGraph ---
 langgraph==1.2.10
 langgraph-checkpoint>=4.1.0,<5.0.0
+# V1.5.1 T02 必装：AsyncSqliteSaver 单独打包（langgraph-checkpoint 4.1.x 不内置
+# sqlite 子包，需显式安装 langgraph-checkpoint-sqlite）。3.1.x 是与
+# langgraph-checkpoint 4.1.x 配套的版本；上限 <4.0 避免未来大版本 API 破坏。
+langgraph-checkpoint-sqlite>=2.0.0,<4.0.0
 langchain-core>=0.3.0
-# langchain-dashscope replaced with direct dashscope SDK
+# dashscope 直连 SDK（替代 langchain-dashscope）
+dashscope>=1.20.0
+# D7：已实测对齐当前安装版本（importlib.metadata -> 0.2.2）。勿随意降级，
+# 0.1.x 与 langchain-core 0.3.x 的 client 构造签名不兼容。
 langchain-mcp-adapters==0.2.2
+# V1.5.1：AsyncSqliteSaver 异步 SQLite 驱动（架构 §2.1.1 决策 #1）
+# langgraph-checkpoint-sqlite 3.1.x 实际拉的是 aiosqlite 0.22.x，0.19 pin 会被
+# 自动卸载；放宽到 <0.23.0 覆盖当前安装版本，同时避免 1.0 大版本不兼容。
+aiosqlite>=0.19.0,<0.23.0
 
 # --- MCP SDK ---
 mcp>=1.0.0,<2.0.0
@@ -30,6 +41,8 @@ networkx>=3.2.0
 
 # --- Neo4j Driver (M0: 知识图谱升级) ---
 # 与 neo4j 5.x-community 镜像配套；锁定主版本避免 6.x API 不兼容
+# D7：**生产/CI 必须安装**（pip install -r requirements.txt）；本地沙箱可能装不上，
+# 相关测试（test_kg_m0 等）在 neo4j 不可用时自动 skip。
 neo4j>=5.0.0,<6.0.0
 
 # --- HTTP / Async ---
@@ -41,6 +54,17 @@ python-dotenv>=1.0.0
 loguru>=0.7.0
 tiktoken>=0.7.0
 
+# --- V1.5.1 T06 Security (QA R-X2 / R-X3) ---
+# JWT 鉴权（SSE 端点 thread ownership 校验）
+pyjwt>=2.8.0
+# IP 维度 rate limit（admin 端点防暴力破解）
+slowapi>=0.1.9
+
 # --- Dev ---
-# pytest>=8.0.0
-# httpx (test client included above)
+# D7：测试依赖已移至 requirements-dev.txt（pytest / pytest-asyncio 等），
+# 生产部署仅安装本文件。
+
+# --- P1 扩展点：用户上传 PDF 解析（V1.7.1 已启用）---
+# 生产必须安装：core/kb_upload.py 的 _parse_pdf() 依赖本库（lazy import）。
+# 文本型 PDF 解析；扫描件不做 OCR。未安装时 .pdf 上传返回 400「PDF 解析库未安装」。
+pypdf>=4.0.0

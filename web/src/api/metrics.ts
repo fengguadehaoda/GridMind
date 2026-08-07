@@ -157,3 +157,38 @@ export async function grayscaleManualRollback(
   })
   return data
 }
+
+/* ═══════════════════════════════════════════════════════════════
+ * v1.6.0 P1-4 · 灰度拓扑图端点（可选探测）
+ * 后端未排期时返回 404，grayscaleGraph store 回落前端模拟数据。
+ * ═══════════════════════════════════════════════════════════════ */
+
+export interface GrayscaleGraphNodeDto {
+  id: string
+  name: string
+  type: string
+  load: number
+  error_rate?: number
+  status?: string
+  meta?: Record<string, unknown>
+}
+
+export interface GrayscaleGraphEdgeDto {
+  source: string
+  target: string
+  label?: string
+  weight?: number
+}
+
+export interface GrayscaleGraphResponse {
+  nodes: GrayscaleGraphNodeDto[]
+  edges: GrayscaleGraphEdgeDto[]
+}
+
+/** GET /grayscale/graph — 灰度拓扑图（节点 ≤200；404 时前端回落模拟） */
+export async function getGrayscaleGraph(
+  config?: AxiosRequestConfig,
+): Promise<GrayscaleGraphResponse> {
+  const { data } = await http.get<GrayscaleGraphResponse>('/grayscale/graph', config)
+  return data
+}

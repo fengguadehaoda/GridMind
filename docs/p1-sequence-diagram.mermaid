@@ -1,0 +1,78 @@
+### 4.1 命令面板唤起执行（⌘K → 搜索 → 执行）
+
+sequenceDiagram
+    autonumber
+    actor U as 调度员
+    participant HR as hotkeyRegistry
+    participant CP as CommandPalette.vue
+    participant UC as useCommands
+    participant FZ as utils/fuzzy.ts
+    participant RT as vue-router
+    participant ST as stores(chat/theme/display/reasoning)
+
+    U->>HR: 按 ⌘K / Ctrl+K
+    HR->>CP: 命中 binding(open)
+    CP->>CP: open=true · 焦点落输入框 · 清空 query
+    U->>CP: 输入 "jk"
+    CP->>FZ: normalizeQuery("jk")
+    CP->>UC: filter(commands, "jk")
+    UC->>FZ: matchScore(title/subtitle/keywords)
+    FZ-->>UC: 命中 [实时监控(监控/jk/monitor), ...]
+    UC-->>CP: 分组结果 routes/actions/context
+    U->>CP: ↑↓ 选择 "实时监控"
+    U->>CP: Enter
+    CP->>UC: execute("route_monitor")
+    UC->>RT: router.push('/monitor')
+    CP->>CP: open=false
+    RT-->>U: 跳转完成（<3s 目标达成）
+
+### 4.2 Session 徽标点击展开（时间线 / token / 回滚）
+
+sequenceDiagram
+    autonumber
+    actor U as 调度员
+    participant SB as SessionBadge.vue
+    participant SS as sessionStats store
+    participant RS as reasoning store
+    participant API as api/chat.ts
+    participant SD as SessionDetailDrawer.vue
+
+    U->>SB: 点击徽标（running）
+    SB->>SS: openDrawer()
+    SS->>SS: viewStatus=running · 启动 elapsed 计时器
+    SS->>API: GET /sessions/{id}/checkpoints
+    API-->>SS: SessionCheckpointView[]
+    SS->>RS: 读 steps / status / sessionId
+    RS-->>SS: ReasoningStep[]
+    SS-->>SD: 组装 SessionStats（时间线 + token 估算 + 回滚节点）
+    SD-->>U: 渲染 drawer（≤1s）
+    U->>SD: 点击 [回滚到步 2]
+    SD->>U: ElMessageBox 二次确认
+    U->>SD: 确认
+    SD->>RS: rerunFromStep(stepId)
+    RS->>API: POST /sessions/{id}/rewind {step_index, edited_content:null}
+    API-->>RS: new_steps[]
+    RS-->>SS: 时间线刷新信号
+    SS-->>SD: 重新组装视图
+
+### 4.3 （补充）帮助中心检索（/help 搜索）
+
+sequenceDiagram
+    autonumber
+    actor U as 运维工程师
+    participant HC as HelpCenter.vue
+    participant HS as help store
+    participant MD as utils/markdown.ts
+    participant FS as fetch(静态资源)
+
+    U->>HC: 输入 "灰度切流"
+    HC->>HS: search("灰度切流")
+    HS->>HS: 若 manifest 未加载 → loadManifest()
+    HS->>FS: fetch('/help/manifest.json')
+    FS-->>HS: HelpArticleMeta[]
+    HS->>FS: fetch('/help/grayscale.md')（按需缓存）
+    FS-->>HS: 原始 md
+    HS->>MD: render(src) + extractHeadings(src) + extractSearchText(src)
+    MD-->>HS: html / headings / plainText
+    HS->>HS: 三域匹配（标题/章节/正文）→ SearchHit[]
+    HS-->>HC: 分组结果（文档标题/章节）+ 命中高亮

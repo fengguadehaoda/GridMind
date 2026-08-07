@@ -1,0 +1,67 @@
+{
+  "articles": [
+    {
+      "id": "architecture",
+      "title": "架构总览",
+      "source": "docs/help-src/architecture.md",
+      "path": "/help/architecture.md",
+      "summary": "GridMind 灵枢电网的整体架构：前端 HUD 控制台、LangGraph 推理后端、知识库与 SSE 事件流。",
+      "keywords": ["架构", "架构总览", "jgtl", "architecture", "拓扑", "LangGraph", "前端", "后端", "知识库"],
+      "order": 1
+    },
+    {
+      "id": "grayscale",
+      "title": "灰度切流指南",
+      "source": "docs/help-src/grayscale.md",
+      "path": "/help/grayscale.md",
+      "summary": "双 backend 灰度上线：手动切流、监控窗口、方案对比与回滚操作。",
+      "keywords": ["灰度", "切流", "hdql", "grayscale", "方案", "回滚", "切换", "比例"],
+      "order": 2
+    },
+    {
+      "id": "hitl",
+      "title": "HITL 使用指南",
+      "source": "docs/help-src/hitl.md",
+      "path": "/help/hitl.md",
+      "summary": "人在回路（Human-in-the-Loop）：高危操作审批、Edit & Continue 与审计追踪。",
+      "keywords": ["HITL", "审批", "审计", "hitl", "高危", "人工确认", "Edit", "回滚"],
+      "order": 3
+    },
+    {
+      "id": "shortcuts",
+      "title": "快捷键总表",
+      "source": "docs/help-src/shortcuts.md",
+      "path": "/help/shortcuts.md",
+      "summary": "全部全局快捷键：命令面板、速查浮层、路由直达与导航操作。",
+      "keywords": ["快捷键", "快捷", "kj", "shortcuts", "键盘", "命令", "⌘K", "ESC"],
+      "order": 4
+    },
+    {
+      "id": "monitoring",
+      "title": "监控面板说明",
+      "source": "docs/help-src/monitoring.md",
+      "path": "/help/monitoring.md",
+      "summary": "设备实时监控：健康评分、遥测趋势、异常检测与 Auto-grid 自适应布局。",
+      "keywords": ["监控", "实时监控", "jkg", "monitoring", "设备", "遥测", "健康", "异常", "auto-grid"],
+      "order": 5
+    },
+    {
+      "id": "session",
+      "title": "Session 可观测",
+      "source": "docs/help-src/session.md",
+      "path": "/help/session.md",
+      "summary": "查看 AI 推理会话状态：步骤时间线、token 消耗与回滚节点。",
+      "keywords": ["session", "会话", "推理", "token", "步骤", "时间线", "回滚", "可观测"],
+      "order": 6
+    },
+    {
+      "id": "faq",
+      "title": "常见问题 FAQ",
+      "source": "docs/help-src/faq.md",
+      "path": "/help/faq.md",
+      "summary": "面向调度员、运维工程师与开发者的高频问题解答。",
+      "keywords": ["FAQ", "常见问题", "faq", "帮助", "报错", "无法", "怎么", "token"],
+      "order": 7
+    }
+  ]
+}

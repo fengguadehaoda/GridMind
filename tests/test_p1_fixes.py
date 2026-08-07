@@ -212,7 +212,7 @@ def test_p1_4_diagnosis_fusion_log_persist() -> None:
     _ok("空 thread_id → 返回 None（fail-closed）")
 
 
-async def test_p1_4_orchestrator_persists() -> None:
+async def _test_p1_4_orchestrator_persists_async() -> None:
     """P1-4: DiagnosisOrchestrator.fuse() 完成后自动持久化融合结果。"""
     print("\n=== P1-4: Orchestrator 自动持久化 ===")
 
@@ -302,7 +302,7 @@ def main() -> None:
     test_p1_3_chain_pagination_logic()
     test_p1_4_diagnosis_fusion_log_persist()
 
-    asyncio.run(test_p1_4_orchestrator_persists())
+    asyncio.run(_test_p1_4_orchestrator_persists_async())
 
     print("\n" + "=" * 60)
     print("✅ ALL P1 FIXES VERIFIED")

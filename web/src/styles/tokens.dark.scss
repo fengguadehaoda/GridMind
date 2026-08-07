@@ -135,3 +135,69 @@
   --el-color-info: #8b9bb4;
   --el-color-info-light-9: rgba(138, 155, 180, 0.15);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// v1.5.0 P0-2 · Dark 主题色盲 Palette 路由层
+// ═══════════════════════════════════════════════════════════════
+// 实际加载入口为 tokens.scss（含 :root 默认 + 3 套 color-blind 块），
+// 本文件保留 dark 主题 4 套 palette 定义作为文档镜像（与 tokens.scss 同步）。
+//
+// 注意：color-blind 3 套 palette 的颜色值在 dark/light 主题下保持一致
+// （行业标准色板已为深浅双背景设计），仅 default palette 路由到 --status-*
+// （dark/light 各自的 --status-* 已由上面 :root[data-theme="dark"] 定义）。
+
+// ── dark 主题 default palette（--cb-status-* → --status-*，theme-aware）──
+:root[data-theme="dark"][data-cb-palette="default"] {
+  --cb-status-normal-fg: var(--status-success);
+  --cb-status-normal-soft: var(--status-success-soft);
+  --cb-status-warning-fg: var(--status-warning);
+  --cb-status-warning-soft: var(--status-warning-soft);
+  --cb-status-critical-fg: var(--status-danger);
+  --cb-status-critical-soft: var(--status-danger-soft);
+  --cb-status-info-fg: var(--status-info);
+  --cb-status-info-soft: var(--status-info-soft);
+  --cb-status-accent-fg: var(--brand-accent);
+  --cb-status-accent-soft: var(--brand-accent-soft);
+}
+
+// ── dark 主题 IBM Carbon Accessibility ──
+:root[data-theme="dark"][data-cb-palette="ibm-cb-safe"] {
+  --cb-status-normal-fg: #648FFF;
+  --cb-status-normal-soft: rgba(100, 143, 255, 0.18);
+  --cb-status-warning-fg: #FE6100;
+  --cb-status-warning-soft: rgba(254, 97, 0, 0.18);
+  --cb-status-critical-fg: #DC267F;
+  --cb-status-critical-soft: rgba(220, 38, 127, 0.18);
+  --cb-status-info-fg: #785EF0;
+  --cb-status-info-soft: rgba(120, 94, 240, 0.18);
+  --cb-status-accent-fg: #FFB000;
+  --cb-status-accent-soft: rgba(255, 176, 0, 0.18);
+}
+
+// ── dark 主题 Okabe-Ito 2007 ──
+:root[data-theme="dark"][data-cb-palette="okabe-ito"] {
+  --cb-status-normal-fg: #009E73;
+  --cb-status-normal-soft: rgba(0, 158, 115, 0.18);
+  --cb-status-warning-fg: #E69F00;
+  --cb-status-warning-soft: rgba(230, 159, 0, 0.18);
+  --cb-status-critical-fg: #D55E00;
+  --cb-status-critical-soft: rgba(213, 94, 0, 0.18);
+  --cb-status-info-fg: #56B4E9;
+  --cb-status-info-soft: rgba(86, 180, 233, 0.18);
+  --cb-status-accent-fg: #CC79A7;
+  --cb-status-accent-soft: rgba(204, 121, 167, 0.18);
+}
+
+// ── dark 主题 ColorBrewer RdYlBu ──
+:root[data-theme="dark"][data-cb-palette="colorbrewer-rdylbu"] {
+  --cb-status-normal-fg: #1A9850;
+  --cb-status-normal-soft: rgba(26, 152, 80, 0.18);
+  --cb-status-warning-fg: #FDAE61;
+  --cb-status-warning-soft: rgba(253, 174, 97, 0.18);
+  --cb-status-critical-fg: #D73027;
+  --cb-status-critical-soft: rgba(215, 48, 39, 0.18);
+  --cb-status-info-fg: #4575B4;
+  --cb-status-info-soft: rgba(69, 117, 180, 0.18);
+  --cb-status-accent-fg: #FEE090;
+  --cb-status-accent-soft: rgba(254, 224, 144, 0.22);
+}

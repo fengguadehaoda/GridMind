@@ -1,0 +1,85 @@
+classDiagram
+    class MenuDrawerEntry {
+        +id: string
+        +type: "component" | "route" | "action"
+        +label?: string
+        +icon?: Component
+        +component?: Component
+        +route?: string
+        +action?: () => void
+    }
+    class MenuDrawerGroup {
+        +id: string
+        +title: string
+        +entries: MenuDrawerEntry[]
+    }
+    class menuDrawerGroups {
+        +groups: MenuDrawerGroup[]
+        +quickEntries: MenuDrawerEntry[]
+    }
+    class MenuDrawer {
+        +modelValue: boolean
+        +open: boolean
+        +keyword: string
+        +filteredGroups: ComputedRef~MenuDrawerGroup[]~
+        +handleEntry(entry: MenuDrawerEntry): void
+        +close(): void
+    }
+    class StatusCardData {
+        +cpu: number
+        +mem: number
+        +ait: number
+        +clk: string
+        +serviceConnected: boolean
+    }
+    class StatusMetricSample {
+        +t: number
+        +cpu: number
+        +mem: number
+    }
+    class StatusCardState {
+        +visible: boolean
+        +collapsed: boolean
+        +position: "bottom-right"
+        +data: StatusCardData
+        +history: StatusMetricSample[]
+    }
+    class useStatusCard {
+        +visible: Ref~boolean~
+        +collapsed: Ref~boolean~
+        +data: ComputedRef~StatusCardData~
+        +history: Ref~StatusMetricSample[]~
+        +toggleVisible(): void
+        +toggleCollapsed(): void
+        +hide(): void
+        +start(): void
+        +stop(): void
+    }
+    class StatusFloatingCard {
+        +connected?: boolean
+        +toggle(): void
+        +hide(): void
+    }
+    class App {
+        +menuOpen: Ref~boolean~
+        +navOpen: Ref~boolean~
+        +connected: Ref~boolean~
+        +checkHealth(): Promise~void~
+    }
+
+    App --> MenuDrawer : v-model menuOpen
+    App --> StatusFloatingCard : :connected prop
+    App --> NavDrawer : v-model navOpen (compact)
+    MenuDrawer --> menuDrawerGroups : 读取注册表
+    menuDrawerGroups --> MenuDrawerEntry : 包含
+    StatusFloatingCard --> useStatusCard : 消费单例
+    useStatusCard --> StatusCardState : 持有
+    StatusCardState --> StatusCardData : data
+    StatusCardState --> StatusMetricSample : history[]
+    MenuDrawer ..> HitlBadge : 嵌入复用
+    MenuDrawer ..> SessionBadge : 嵌入复用
+    MenuDrawer ..> BackgroundModeToggle : 嵌入复用
+    MenuDrawer ..> ThemeToggle : 嵌入复用
+    MenuDrawer ..> ColorBlindModeToggle : 嵌入复用
+    MenuDrawer ..> OnboardingTrigger : 嵌入复用
+    StatusFloatingCard ..> StatusIcon : 状态点复用

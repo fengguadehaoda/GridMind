@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant U as 用户
+    participant SFC as StatusFloatingCard.vue
+    participant USC as useStatusCard.ts
+    participant T as 定时器 (1s 时钟 / 5s 指标)
+    participant CP as CommandPalette.vue
+    participant UC as useCommands.ts
+
+    Note over USC,T: App onMounted → USC.start() 启动模拟
+    T-->>USC: tick() 更新 cpu/mem/ait/clk + 每 5min 采样 history
+    USC-->>SFC: data 响应式更新（折叠态一行：CPU 38% · 内存 58% · AIT · CLK 11:54:20）
+    U->>SFC: 点击折叠卡片
+    SFC->>USC: toggleCollapsed() → collapsed=false
+    USC-->>SFC: 展开详情（CPU/内存 SVG 趋势 + 服务连接 + 最近活动时间）
+    U->>SFC: 点击「隐藏」
+    SFC->>USC: hide() → visible=false（localStorage 持久化）
+    Note over App: App 根容器加 app-container--card-visible 移除 → FAB 复位
+    U->>CP: ⌘K 打开命令面板
+    U->>CP: 搜索「切换状态卡片显示」
+    CP->>UC: execute("action_status_card_toggle")
+    UC->>USC: toggleVisible() → visible=true（卡片重新显示）

@@ -31,6 +31,12 @@
         <ThinkingIndicator v-if="msg.loading" label="思考中" :speed="1.2" />
       </div>
 
+      <!-- Bug2 修复：演示模式剧本外提示（后端返回固定文案 + is_demo_out_of_scope 标记） -->
+      <div v-if="msg.metadata?.is_demo_out_of_scope" class="demo-out-of-scope">
+        🔒 当前为演示模式，仅支持剧本内问题（设备监控 / 故障诊断 / 知识库检索 / 功能介绍）。
+        请切换至「标准」模式后提问。
+      </div>
+
       <!-- 健康评分卡片 -->
       <div v-if="msg.healthScores?.length" class="context-block">
         <HealthCard :scores="msg.healthScores" />
@@ -368,6 +374,18 @@ const renderedContent = computed(() => {
 
 .context-block {
   margin-top: var(--space-3);
+}
+
+/* Bug2 修复：演示模式剧本外提示（虚线信息框，区别于普通回复） */
+.demo-out-of-scope {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--status-warning, #e6a23c);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--role-system-bg, rgba(255, 255, 255, 0.04));
+  color: var(--text-muted);
+  font-size: var(--fs-xs, 12px);
+  line-height: 1.6;
 }
 
 .reasoning-loading {

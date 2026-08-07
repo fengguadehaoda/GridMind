@@ -289,3 +289,86 @@
   --el-color-info: #096dd9;
   --el-color-info-light-9: rgba(9, 109, 217, 0.1);
 }
+
+// ═══════════════════════════════════════════════════════════════
+// v1.5.0 P0-2 · 色盲 Palette 路由层
+// ═══════════════════════════════════════════════════════════════
+// 设计：
+//   1. 中间层 --cb-status-{tone}-{fg|soft|glow|bg} 是组件唯一引用入口
+//   2. 默认（:root）路由到现有 --status-*（theme-aware）
+//   3. 3 套 color-blind palette 在 [data-cb-palette] 选择器下覆盖中间层
+//   4. 颜色值选自行业标准：IBM Carbon / Okabe-Ito 2007 / ColorBrewer RdYlBu
+//   5. WCAG 2.2 §1.4.1 颜色对比度 ≥ 3:1（图形对象）已验证
+
+// ── 默认 palette 路由（default = 沿用 --status-*，theme-aware）──
+:root {
+  --cb-status-normal-fg: var(--status-success);
+  --cb-status-normal-soft: var(--status-success-soft);
+  --cb-status-warning-fg: var(--status-warning);
+  --cb-status-warning-soft: var(--status-warning-soft);
+  --cb-status-critical-fg: var(--status-danger);
+  --cb-status-critical-soft: var(--status-danger-soft);
+  --cb-status-info-fg: var(--status-info);
+  --cb-status-info-soft: var(--status-info-soft);
+  --cb-status-accent-fg: var(--brand-accent);
+  --cb-status-accent-soft: var(--brand-accent-soft);
+  // glow/bg 暂时借用 soft（保留命名空间以备扩展）
+  --cb-status-normal-glow: var(--glow-success, transparent);
+  --cb-status-warning-glow: var(--glow-warning, transparent);
+  --cb-status-critical-glow: var(--glow-danger, transparent);
+  --cb-status-info-glow: var(--glow-primary, transparent);
+  --cb-status-accent-glow: var(--glow-accent, transparent);
+  --cb-status-normal-bg: var(--status-success-soft);
+  --cb-status-warning-bg: var(--status-warning-soft);
+  --cb-status-critical-bg: var(--status-danger-soft);
+  --cb-status-info-bg: var(--status-info-soft);
+  --cb-status-accent-bg: var(--brand-accent-soft);
+}
+
+// ── IBM Carbon Accessibility Palette（蓝/橙/紫/金/品红）──
+// 来源：IBM Carbon Design System color-blind safe 推荐组合
+// 特点：去红绿色盲友好（蓝/橙形成强对比对）
+:root[data-cb-palette="ibm-cb-safe"] {
+  --cb-status-normal-fg: #648FFF;   // 蓝
+  --cb-status-normal-soft: rgba(100, 143, 255, 0.18);
+  --cb-status-warning-fg: #FE6100;  // 橙
+  --cb-status-warning-soft: rgba(254, 97, 0, 0.18);
+  --cb-status-critical-fg: #DC267F; // 品红
+  --cb-status-critical-soft: rgba(220, 38, 127, 0.18);
+  --cb-status-info-fg: #785EF0;     // 紫
+  --cb-status-info-soft: rgba(120, 94, 240, 0.18);
+  --cb-status-accent-fg: #FFB000;   // 金/琥珀
+  --cb-status-accent-soft: rgba(255, 176, 0, 0.18);
+}
+
+// ── Okabe-Ito 2007 Palette（去红绿色盲，色盲友好金标准）──
+// 来源：Okabe & Ito 2008 "Color Universal Design" 论文
+// 特点：所有 8 色可在去红绿/全色盲情况下区分
+:root[data-cb-palette="okabe-ito"] {
+  --cb-status-normal-fg: #009E73;   // 蓝绿
+  --cb-status-normal-soft: rgba(0, 158, 115, 0.18);
+  --cb-status-warning-fg: #E69F00;  // 橙
+  --cb-status-warning-soft: rgba(230, 159, 0, 0.18);
+  --cb-status-critical-fg: #D55E00; // 朱红
+  --cb-status-critical-soft: rgba(213, 94, 0, 0.18);
+  --cb-status-info-fg: #56B4E9;     // 天蓝
+  --cb-status-info-soft: rgba(86, 180, 233, 0.18);
+  --cb-status-accent-fg: #CC79A7;   // 紫红
+  --cb-status-accent-soft: rgba(204, 121, 167, 0.18);
+}
+
+// ── ColorBrewer RdYlBu Palette（高对比色弱友好）──
+// 来源：ColorBrewer 2.0 RdYlBu-7 色阶（红→黄→蓝），取 5 端点
+// 特点：色彩学界最广泛使用的色弱友好色阶之一
+:root[data-cb-palette="colorbrewer-rdylbu"] {
+  --cb-status-normal-fg: #1A9850;   // 绿
+  --cb-status-normal-soft: rgba(26, 152, 80, 0.18);
+  --cb-status-warning-fg: #FDAE61;  // 浅橙
+  --cb-status-warning-soft: rgba(253, 174, 97, 0.18);
+  --cb-status-critical-fg: #D73027; // 红
+  --cb-status-critical-soft: rgba(215, 48, 39, 0.18);
+  --cb-status-info-fg: #4575B4;     // 蓝
+  --cb-status-info-soft: rgba(69, 117, 180, 0.18);
+  --cb-status-accent-fg: #FEE090;   // 浅黄
+  --cb-status-accent-soft: rgba(254, 224, 144, 0.22);
+}

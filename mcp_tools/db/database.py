@@ -44,6 +44,150 @@ def _ensure_devices_columns(conn: sqlite3.Connection) -> None:
             logger.info("Migration: devices.{} added ({})", col, decl)
 
 
+def _ensure_hitl_columns(conn: sqlite3.Connection) -> None:
+    """为 hitl_audit_log 表补齐 V1.5.1 pause/rewind 所需 3 列（幂等迁移）。
+
+    V1.5.1 新增列（架构 §2.4.1 + §6 T01 主理人决策 #5）：
+    - ``risk_level``  TEXT    — HITL 风险分级（low/normal/high/critical）
+    - ``pause_count`` INTEGER — 该 audit 行对应的 session 触发 pause 的次数
+    - ``edit_count``  INTEGER — 该 audit 行对应的 session 触发 edit 的次数
+
+    幂等实现：先 ``PRAGMA table_info`` 查已有列，仅 ALTER 缺失列；
+    SQLite ``ALTER TABLE ADD COLUMN`` 重复执行会抛 "duplicate column name"，
+    旧库升级时**必须**走这条 PRAGMA 路径，否则启动失败。
+    """
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(hitl_audit_log)").fetchall()
+    }
+    # 列迁移：(列名, SQL 声明) — 注意 CHECK 约束在 SQLite ALTER 中不支持，
+    # 故 3 列均**不带** CHECK；CHECK 约束由应用层 Pydantic ``RiskLevel`` 枚举保证。
+    migrations: list[tuple[str, str]] = [
+        ("risk_level", "TEXT NOT NULL DEFAULT 'normal'"),
+        ("pause_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("edit_count", "INTEGER NOT NULL DEFAULT 0"),
+    ]
+    for col, decl in migrations:
+        if col not in existing:
+            try:
+                conn.execute(
+                    f"ALTER TABLE hitl_audit_log ADD COLUMN {col} {decl}"
+                )
+                logger.info(
+                    "V1.5.1 migration: hitl_audit_log.{} added ({})", col, decl
+                )
+            except sqlite3.OperationalError as e:
+                # 双保险：万一 PRAGMA 与 ALTER 竞态，仍兜底捕获"重复列"错误
+                msg = str(e).lower()
+                if "duplicate column" in msg or "already exists" in msg:
+                    logger.debug(
+                        "V1.5.1 migration: hitl_audit_log.{} already exists, skip",
+                        col,
+                    )
+                else:
+                    raise
+
+    # 新增索引（CREATE INDEX IF NOT EXISTS 自身幂等）
+    # 1. risk_level 索引（hitl_audit_service.query_by_risk_level 用，T02 新增方法）
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hitl_risk_level "
+        "ON hitl_audit_log(risk_level)"
+    )
+    # 2 & 3. pause_count / edit_count 部分索引（T01 创建，T02 写入后才有用）
+    #    部分索引 (WHERE col > 0) 在大表上更省空间（多数 audit 行 count=0）
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hitl_pause_count "
+        "ON hitl_audit_log(pause_count) WHERE pause_count > 0"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hitl_edit_count "
+        "ON hitl_audit_log(edit_count) WHERE edit_count > 0"
+    )
+
+
+def _ensure_knowledge_chunks_columns(conn: sqlite3.Connection) -> None:
+    """为 knowledge_chunks 表补齐「功能介绍知识库化」所需元信息列（幂等迁移）。
+
+    新增列（全部可空 / 带默认值，旧数据零影响）：
+    - ``tags``           TEXT — 逗号分隔标签串（如 ``feature-intro,scenario:monitor-overview``）
+    - ``icon``           TEXT — Element Plus 图标名（场景卡 / wizard 要点卡渲染用）
+    - ``starter_message`` TEXT — 场景卡种子问题（仅 ``scenario:*`` 分片有值）
+    - ``meta``           TEXT — JSON 字符串，承载 tour steps / bullets / cta 等结构化内容
+    - ``updated_at``     TEXT — 最近一次入仓时间（本地时间字符串）
+
+    幂等实现：先 ``PRAGMA table_info`` 查已有列，仅 ALTER 缺失列；
+    并额外 catch "duplicate column" 做双保险（防 PRAGMA 与 ALTER 竞态）。
+    """
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(knowledge_chunks)").fetchall()
+    }
+    migrations: list[tuple[str, str]] = [
+        ("tags", "TEXT NOT NULL DEFAULT ''"),
+        ("icon", "TEXT"),
+        ("starter_message", "TEXT"),
+        ("meta", "TEXT"),
+        ("updated_at", "TEXT"),
+    ]
+    for col, decl in migrations:
+        if col in existing:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE knowledge_chunks ADD COLUMN {col} {decl}")
+            logger.info("Feature-intro migration: knowledge_chunks.{} added ({})", col, decl)
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                logger.debug(
+                    "Feature-intro migration: knowledge_chunks.{} already exists, skip", col
+                )
+            else:
+                raise
+
+    # doc_id 索引：upsert_chunks 按 doc_id 覆盖式删除，需要索引避免全表扫
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_doc "
+        "ON knowledge_chunks(doc_id)"
+    )
+
+
+def _ensure_kb_meta_table(conn: sqlite3.Connection) -> None:
+    """创建/迁移「知识库元信息」轻量表（V1.6 · P0-5 跨进程热更新 · 增补件 §3.2）。
+
+    用途：
+    - ``kb_revision`` —— 单调递增整数，每次 ``upsert_chunks`` 成功后写入。
+    - ``VectorStore.ensure_fresh()`` 每次 ``search_by_tag`` 前惰性 SELECT 比对，
+      跨进程（API 9900 / MCP 9901）共享同一份 SQLite，使 MCP 进程无需重启即可
+      看到运营热更新后的分片。
+
+    幂等实现：``CREATE TABLE IF NOT EXISTS`` 自身幂等；``updated_at`` 用本地时间。
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS kb_meta (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        )
+        """
+    )
+    # 兜底：老库若没 updated_at 列则补齐
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(kb_meta)").fetchall()}
+    if "updated_at" not in existing:
+        try:
+            conn.execute(
+                "ALTER TABLE kb_meta ADD COLUMN updated_at "
+                "TEXT NOT NULL DEFAULT (datetime('now','localtime'))"
+            )
+            logger.info("Feature-intro migration: kb_meta.updated_at added")
+        except sqlite3.OperationalError as e:  # noqa: PERF203
+            msg = str(e).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                logger.debug("kb_meta.updated_at already exists, skip")
+            else:
+                raise
+
+
 def init_db() -> None:
     """初始化数据库表结构。"""
     conn = get_connection()
@@ -219,6 +363,12 @@ def init_db() -> None:
 
         # P0 可解释性 AI 迁移：补齐设备铭牌字段
         _ensure_devices_columns(conn)
+        # V1.5.1 迁移：补齐 HITL 表 pause/rewind 3 列（架构 §2.4.1 + §6 T01）
+        _ensure_hitl_columns(conn)
+        # 功能介绍知识库化迁移：补齐 knowledge_chunks 元信息 5 列
+        _ensure_knowledge_chunks_columns(conn)
+        # V1.6 P0-5 增补件 §3.2：补齐 kb_meta 表（跨进程热更新 revision 戳）
+        _ensure_kb_meta_table(conn)
         conn.commit()
     finally:
         conn.close()

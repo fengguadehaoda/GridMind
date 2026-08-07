@@ -6,7 +6,7 @@
   代码内嵌于本文件）；
 - **优先级排序**：``priority`` 数字越小越先执行（默认 100，与 DAG 拓扑序无关）；
 - **置信度**：每条规则附带 ``confidence`` ∈ [0, 1]；最终按 ``min_confidence`` 过滤；
-- **5s 超时守护**：``threading.Timer(timeout_s, raise)`` 守护每条规则执行；
+- **5s 超时守护**：daemon 工作线程 + ``join(timeout)`` 守护每条规则执行；
 - **去重**：同 ``(src, tgt, relation_type)`` 保留 confidence 最高的；
 - **三重防御**：``max_rules=50`` + ``max_inferred=1000`` + ``max_hops=5`` 防 OOM；
 - **Feature flag**（默认 False）：``enable_inference_engine=False`` 时 ``infer()``
@@ -29,7 +29,7 @@
 
 风险与守护（架构 §11.1 · R1）
 --------
-- **死循环 / 长计算**：每条规则 5s ``threading.Timer`` 守护；超时跳过该规则，
+- **死循环 / 长计算**：每条规则 5s daemon 线程 + ``join(timeout)`` 守护；超时跳过该规则，
   不影响其他规则；记 ``rule_timeout`` 日志事件。
 """
 
@@ -188,7 +188,7 @@ class ReasoningRulesEngine:
         流程：
             1. ``KGClient.get_entity(entity_id)`` + 1 跳扩展
             2. 按 ``priority`` 升序遍历规则
-            3. ``threading.Timer`` 守护（5s 超时）
+            3. daemon 线程 + ``join(timeout)`` 守护（5s 超时）
             4. 条件成立 → 生成 ``InferredRelation``
             5. 去重 + 置信度过滤 + 上限截断
         """
@@ -301,9 +301,13 @@ class ReasoningRulesEngine:
         entity: dict[str, Any],
         ctx: dict[str, Any],
     ) -> bool:
-        """单规则带超时守护执行（``threading.Timer`` 模式）。
+        """单规则带超时守护执行（工作线程 + ``join(timeout)`` 模式）。
 
-        说明：``threading.Timer`` 仅守护本线程；不阻塞主线程。
+        D5 修复：原 ``threading.Timer`` 实现会**先睡满 ``interval`` 再执行
+        condition**，导致即使瞬时完成的规则每次也要阻塞 ``timeout_s``
+        （默认 5s，全量测试 400s+ 的主要来源）。改为立即启动 daemon 工作线程，
+        用 ``join(timeout)`` 只对真正超时的规则付出等待成本；瞬时规则毫秒级返回。
+        超时后线程无法被强杀，靠 daemon=True 与调用方协作停止（测试用停止标志）。
         """
         result_container: dict[str, Any] = {"value": False, "raised": None}
 
@@ -313,14 +317,11 @@ class ReasoningRulesEngine:
             except Exception as exc:  # noqa: BLE001
                 result_container["raised"] = exc
 
-        # rule.timeout_s + 0.5s 缓冲（避免误判）
-        timer = threading.Timer(rule.timeout_s, target)
-        timer.daemon = True
-        timer.start()
-        # 等 timeout_s + 0.1s 让 condition 执行完
-        timer.join(timeout=rule.timeout_s + 0.1)
-        if timer.is_alive():
-            timer.cancel()
+        worker = threading.Thread(target=target, name=f"kg-rule-{rule.rule_id}", daemon=True)
+        worker.start()
+        # 等待 condition 完成；超时则跳过该规则（不阻塞主流程）
+        worker.join(timeout=rule.timeout_s)
+        if worker.is_alive():
             raise RuleTimeoutError(rule.rule_id, rule.timeout_s)
         if result_container["raised"]:
             raise result_container["raised"]

@@ -85,25 +85,27 @@
   .el-tag {
     --el-tag-border-color: var(--border-default);
   }
+  // v1.5.0 P0-2：el-tag 内部颜色跟随 palette 路由（--cb-status-*）
+  // 由 :root[data-cb-palette] 选择器切换，4 套 palette 自动同步
   .el-tag--success {
-    --el-tag-bg-color: var(--status-success-soft);
-    --el-tag-text-color: var(--status-success);
-    --el-tag-border-color: var(--status-success);
+    --el-tag-bg-color: var(--cb-status-normal-soft);
+    --el-tag-text-color: var(--cb-status-normal-fg);
+    --el-tag-border-color: var(--cb-status-normal-fg);
   }
   .el-tag--warning {
-    --el-tag-bg-color: var(--status-warning-soft);
-    --el-tag-text-color: var(--status-warning);
-    --el-tag-border-color: var(--status-warning);
+    --el-tag-bg-color: var(--cb-status-warning-soft);
+    --el-tag-text-color: var(--cb-status-warning-fg);
+    --el-tag-border-color: var(--cb-status-warning-fg);
   }
   .el-tag--danger {
-    --el-tag-bg-color: var(--status-danger-soft);
-    --el-tag-text-color: var(--status-danger);
-    --el-tag-border-color: var(--status-danger);
+    --el-tag-bg-color: var(--cb-status-critical-soft);
+    --el-tag-text-color: var(--cb-status-critical-fg);
+    --el-tag-border-color: var(--cb-status-critical-fg);
   }
   .el-tag--info {
-    --el-tag-bg-color: var(--status-info-soft);
-    --el-tag-text-color: var(--status-info);
-    --el-tag-border-color: var(--status-info);
+    --el-tag-bg-color: var(--cb-status-info-soft);
+    --el-tag-text-color: var(--cb-status-info-fg);
+    --el-tag-border-color: var(--cb-status-info-fg);
   }
   .el-tag--primary {
     --el-tag-bg-color: var(--brand-primary-soft);
@@ -162,6 +164,9 @@
   .el-progress-bar__outer {
     background-color: var(--border-muted) !important;
   }
+
+  // v1.5.0 P0-2：el-progress 内部 color 由 :color prop 注入（受 palette 影响）
+  // 组件层已用 var(--cb-status-*-fg) 传入，element-overrides 不再二次覆写
 
   // Alert
   .el-alert--warning {
@@ -280,25 +285,27 @@
     --el-button-border-color: var(--status-danger);
   }
 
+  // v1.5.0 P0-2：el-tag 内部颜色跟随 palette 路由（--cb-status-*）
+  // 由 :root[data-cb-palette] 选择器切换，4 套 palette 自动同步
   .el-tag--success {
-    --el-tag-bg-color: var(--status-success-soft);
-    --el-tag-text-color: var(--status-success);
-    --el-tag-border-color: var(--status-success);
+    --el-tag-bg-color: var(--cb-status-normal-soft);
+    --el-tag-text-color: var(--cb-status-normal-fg);
+    --el-tag-border-color: var(--cb-status-normal-fg);
   }
   .el-tag--warning {
-    --el-tag-bg-color: var(--status-warning-soft);
-    --el-tag-text-color: var(--status-warning);
-    --el-tag-border-color: var(--status-warning);
+    --el-tag-bg-color: var(--cb-status-warning-soft);
+    --el-tag-text-color: var(--cb-status-warning-fg);
+    --el-tag-border-color: var(--cb-status-warning-fg);
   }
   .el-tag--danger {
-    --el-tag-bg-color: var(--status-danger-soft);
-    --el-tag-text-color: var(--status-danger);
-    --el-tag-border-color: var(--status-danger);
+    --el-tag-bg-color: var(--cb-status-critical-soft);
+    --el-tag-text-color: var(--cb-status-critical-fg);
+    --el-tag-border-color: var(--cb-status-critical-fg);
   }
   .el-tag--info {
-    --el-tag-bg-color: var(--status-info-soft);
-    --el-tag-text-color: var(--status-info);
-    --el-tag-border-color: var(--status-info);
+    --el-tag-bg-color: var(--cb-status-info-soft);
+    --el-tag-text-color: var(--cb-status-info-fg);
+    --el-tag-border-color: var(--cb-status-info-fg);
   }
   .el-tag--primary {
     --el-tag-bg-color: var(--brand-primary-soft);

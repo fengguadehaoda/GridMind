@@ -1,169 +1,36 @@
----
-note: M2 阶段程序调用流程
----
-
-# 场景 1: RAG 主链路改造（10% 灰度命中）
-
-```mermaid
 sequenceDiagram
     autonumber
-    actor U as 调度员
-    participant API as /chat 端点
-    participant RAG as RagEngine
-    participant Router as GrayscaleRouter
-    participant VS as VectorStore (Chroma)
-    participant KG as KGClient
-    participant N as Neo4j
-    participant M as RollbackMonitor
+    participant U as 用户/前端 KnowledgeUpload.vue
+    participant R as api/routers/knowledge_upload.py
+    participant S as KbUploadService (core/kb_upload.py)
+    participant VS as VectorStore (core/vector_store.py)
+    participant DB as SQLite knowledge_chunks + kb_meta
+    participant CH as Chroma knowledge_base
+    participant M as MCP 进程 9901 (RAG retrieve)
 
-    U->>API: POST /chat (thread_id="t-abc", msg="#1主变油温异常")
-    API->>RAG: retrieve(query, top_k=3, thread_id="t-abc")
-    RAG->>VS: search("油温异常", top_k=3)
-    VS-->>RAG: 3 个向量片段
+    U->>R: POST /api/knowledge/upload (multipart: file, title?)
+    R->>R: Depends(verify_jwt_if_prod) 鉴权
+    R->>S: ingest(filename, data, title)
+    S->>S: 校验扩展名(.txt/.md) + 大小(≤5MB)
+    S->>S: 编码检测 UTF-8 → GBK 兜底
+    S->>S: 切分 → 构建 chunks（doc_id=user-upload:slug-hash, tags=[user-upload, source:文件名]）
+    S->>VS: get_vector_store().upsert_chunks(chunks)
+    VS->>DB: DELETE WHERE doc_id=? 旧分片（幂等覆盖）
+    VS->>DB: INSERT 新分片（单事务）
+    VS->>DB: reload() 重载内存 _chunks
+    VS->>CH: upsert(ids=doc::doc_id, embeddings, metadatas)
+    VS->>DB: _bump_revision() 写 kb_revision
+    VS-->>S: return chunk_count
+    S-->>R: UploadResponse
+    R-->>U: 200 {doc_id, chunk_count, status:"ok"}
+    Note over U: 前端提示「已入库，共 N 个知识片段」
 
-    RAG->>RAG: _extract_entity_ids("变压器 油温异常 ...")
-    Note over RAG: seed_ids = ["e-TR001", "e-overheat"]
-
-    RAG->>Router: should_use_neo4j("t-abc")
-    Router->>Router: md5("t-abc")[:8] % 100 = 7
-    Router-->>RAG: 7 < 10 → True (命中 10%)
-
-    RAG->>Router: record_request 开始
-    RAG->>KG: get_kg_client()
-    KG->>N: search_entities("主变")
-    N-->>KG: [{id:"e-TR001", ...}]
-
-    RAG->>N: multi_hop_expand("e-TR001", hops=3) via MCP
-    N-->>RAG: 8 个 3 跳实体
-
-    alt query 含"异常"
-        RAG->>N: get_fault_chain("e-TR001", max_hops=3) via MCP
-        N-->>RAG: 3 条因果链
+    Note over M: 下一次 RAG 检索时（≤10s 验收）
+    M->>M: ensure_fresh() 节流检查 kb_revision
+    M->>DB: SELECT kb_revision
+    alt revision 变化
+        M->>M: reload() 重载内存分片（含 user-upload）
+        M-->>U: 检索命中新知识
+    else 无变化
+        M-->>U: 使用既有分片
     end
-
-    RAG->>N: get_applicable_regulations(device_id="e-TR001") via MCP
-    N-->>RAG: 5 条适用规程
-
-    RAG->>Router: record_request(error=False, latency=142ms, backend="neo4j")
-    Router->>M: record(error, latency, backend)
-    M-->>Router: stats
-
-    RAG-->>API: RetrievalResult(vector_chunks=3, graph_entities=12, paths=5)
-    API-->>U: ChatResponse(answer="...", backend="neo4j")
-```
-
-# 场景 2: 双向同步（定时 5min 触发）
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Timer as asyncio Timer (5min)
-    participant Sync as ChromaSyncService
-    participant KG as KGClient / Neo4j
-    participant VS as VectorStore (Chroma)
-    participant Log as SyncLogService (SQLite)
-    participant R as GrayscaleRouter
-
-    Timer->>Sync: on_timer_tick()
-    Sync->>Log: log_pending(sync_type="graph_to_vector", entity_id="*")
-
-    loop 遍历 Neo4j 节点
-        Sync->>KG: cypher_query("MATCH (n) WHERE n.updated_at > $last_sync RETURN n")
-        KG-->>Sync: [Node1, Node2, Node3]
-
-        loop 每个新/更新节点
-            Sync->>KG: get_relations(node_id)
-            KG-->>Sync: [BELONGS_TO, CAUSES, ...]
-            Sync->>Sync: _extract_relations_summary(rels)
-
-            alt Neo4j updated_at > Chroma
-                Sync->>VS: collection.update_metadata(chunk_id, metadata={linked_devices, synced_at})
-                VS-->>Sync: ok
-                Sync->>Log: log_success(id, duration_ms)
-            else 无冲突
-                Sync->>Log: log_success(id, duration_ms)
-            else 冲突（同名不同属性）
-                Sync->>VS: collection.update_metadata(...) 强制覆盖
-                Sync->>Log: log_conflict(id)
-            end
-        end
-    end
-
-    Sync->>R: get_status()  [可选: 上报监控]
-    R-->>Sync: {state, ratio, monitor_stats}
-```
-
-# 场景 3: 写入事件同步（KGMigrator 触发）
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant KM as KGMigrator (M0 工具)
-    participant Sync as ChromaSyncService
-    participant Q as asyncio.Queue
-    participant W as SyncWorker
-    participant KG as KGClient / Neo4j
-    participant VS as VectorStore
-    participant Log as SyncLogService
-
-    KM->>KG: cypher_query("MERGE (n:Entity {id: $eid}) SET n.updated_at = timestamp()", {eid: "e-test-device"})
-    KG-->>KM: ok
-    KM->>Sync: enqueue_event(entity_id="e-test-device", source="kg_migrator")
-    Sync->>Q: put_nowait(event)
-    Note over Sync,Q: 事件持久化：先写 sync_log(pending)
-    Sync->>Log: log_pending(sync_type="event", entity_id="e-test-device", thread_id="kg_migrator")
-    Log-->>Sync: id=42
-
-    W->>Q: get()  [阻塞]
-    Q-->>W: event(entity_id="e-test-device", sync_log_id=42)
-
-    W->>KG: cypher_query("MATCH (n {entity_id: $eid}) OPTIONAL MATCH (n)-[r]->(m) RETURN n, r, m", {eid: "e-test-device"})
-    KG-->>W: [Node, [Relations]]
-    W->>W: _extract_relations_summary(rels)
-    W->>VS: collection.update_metadata(chunk_id, metadata={linked_devices: ["e-test-device"], synced_at: now()})
-    VS-->>W: ok
-    W->>Log: log_success(id=42, duration_ms=85)
-```
-
-# 场景 4: 灰度切流 + 自动回滚
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Admin as 运维
-    participant API as /grayscale/set
-    participant R as GrayscaleRouter
-    participant Svc as GrayscaleAdminService
-    participant M as RollbackMonitor
-    participant RAG as RagEngine (10% 流量)
-    participant KG as KGClient
-    participant N as Neo4j (故障)
-    participant Log as SyncLogService
-
-    Note over Admin,API: 灰度推进：off → gray10 (D+1)
-    Admin->>API: POST /grayscale/set {ratio: 10, token: "admin-token"}
-    API->>Svc: set_ratio(10, actor="admin")
-    Svc->>R: set_ratio(10)
-    R->>R: _state=gray10, _started_at=now()
-
-    Note over RAG,N: 24h 观察期：错误率 >1% 触发
-    loop 100 个请求
-        RAG->>R: should_use_neo4j(tid)
-        R-->>RAG: True (10%)
-        RAG->>N: multi_hop_expand(...)
-        N--xRAG: ConnectionError!
-        RAG->>R: record_request(error=True, latency_ms=500, backend="neo4j")
-        R->>M: record(error, latency, backend)
-        M->>M: _neo4j_consecutive_failures = 3
-    end
-
-    M->>R: should_rollback() → True
-    R->>R: trigger_rollback(reason="auto_rollback")
-    R->>R: set_ratio(0) [回 off]
-    R->>Log: log_rollback_event(reason="auto_rollback")
-    R-->>API: (异步) 200 OK ratio=0 state=rollback
-
-    Note over RAG: 下次请求：should_use_neo4j=False
-    RAG->>KG: get_kg_client() (NetworkXBackend)
-    KG-->>RAG: 2 跳 NetworkX 结果（降级成功）
-```

@@ -501,3 +501,17 @@ GridMind/
 
 **项目版本**：v1.4.0 （前端 `web/package.json`） · **最后更新**：2026
 **总测试覆盖**：298 用例（283 PASS + 18 SKIP 已知 · 实际 298 collected） · **API 端点**：27 个 · **数据规模**：88 节点 + 451 关系 + 539 三元组
+
+---
+
+## 十六、已知依赖公告（工业化部署豁免记录 · 2026-08 审计）
+
+### echarts GHSA-fgmj-fm8m-jvvx（moderate XSS，echarts < 6.1.0）
+
+- **状态**：豁免（记录在案），echarts 保持 `^5.6.0`（`web/package.json`）。
+- **风险**：tooltip / 富文本渲染在数据含未转义 HTML 时可被注入（moderate）。
+- **缓解措施**：`web/src/components/grayscale/TopologyGraph.vue` 是唯一使用 echarts
+  的组件，所有进入 tooltip 的节点/边文本一律经 `escapeTooltip()`（`<`/`>` → `&lt;`/`&gt;`）
+  转义后拼接，杜绝 HTML 注入向量；其余文本均为受控内部数据。
+- **升级计划**：v1.7.0 排期升级 echarts 6.x，需回归拓扑图渲染 + tooltip 富文本样式；
+  本次工业化部署不升级以控制回归风险。

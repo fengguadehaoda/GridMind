@@ -46,6 +46,8 @@ data/*.db-journal
 data/*.db-wal
 data/*.db-shm
 data/chroma/
+# D9：实际持久化目录是 data/chroma_db/（含 chroma.sqlite3，约 188KB）
+data/chroma_db/
 data/uploads/
 
 # ===== M0 阶段新增（知识图谱 Neo4j 升级）=====
@@ -58,9 +60,33 @@ web/node_modules/
 web/pnpm-lock.yaml
 # Vite 构建产物
 web/dist/
+web/dist-*/
+# Vite 配置文件运行时临时产物（dev server 热更新生成的 timestamp 文件）
+web/vite.config.ts.timestamp-*.mjs
+# 前端 QA 临时产物（截图/结果/临时脚本/测试输出）
+web/qa-*/
+web/qa-*.mjs
+web/qa-*.json
+web/qa-shots/
+web/test-results/
+web/tmp/
+web/.qa-*.mjs
 web/src/.vite/
 # Vue 缓存
 .web-vite/
+
+# ===== 根目录 QA 临时产物（P0/P1 迭代遗留，不纳入基线）=====
+/qa_*.txt
+/qa_*.log
+/qa_*.py
+/pytest_out.log
+/vue_tsc_*.log
+/npm_build_*.log
+/qa_matrix_out.log
+/graph_diff.txt
+/import_err*.txt
+/import_exit*.txt
+/route_verify*.txt
 
 # ===== WorkBuddy 工作区 =====
 # WorkBuddy workspace memory（项目级 .workbuddy/）

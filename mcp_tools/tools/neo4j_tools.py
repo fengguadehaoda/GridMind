@@ -52,23 +52,26 @@ def _get_client() -> Any:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 禁止出现的写操作关键字（不区分大小写）
+# B6 修复：改用正则**词边界**匹配，堵住 `SET(` 等无空格变体绕过
+# （旧实现用 `"SET "` 子串，`SET(n.x=1)` 因无尾随空格被放行）。
 _FORBIDDEN_CYPHER_KEYWORDS = [
     "DELETE",
     "DETACH",
     "REMOVE",
     "CREATE",
     "MERGE",
-    "SET ",
-    "SET\n",  # 多行形式
+    "SET",
     "CALL",
     "DROP",
     "FOREACH",
-    "LOAD CSV",
     "IMPORT",
     "COPY",
     "MOVE",
     "RENAME",
 ]
+
+# 多词短语无法用单词边界，单独子串匹配（大小写不敏感）
+_FORBIDDEN_CYPHER_PHRASES = ["LOAD CSV"]
 
 # 允许的读操作关键字
 _ALLOWED_CYPHER_KEYWORDS = ["MATCH", "RETURN", "WITH", "WHERE", "OPTIONAL", "UNWIND", "ORDER", "LIMIT", "SKIP", "UNION", "AS"]
@@ -77,16 +80,28 @@ _ALLOWED_CYPHER_KEYWORDS = ["MATCH", "RETURN", "WITH", "WHERE", "OPTIONAL", "UNW
 def _validate_cypher_readonly(query: str) -> None:
     """校验 Cypher 是只读查询（白名单）。
 
+    B6 修复：对单关键词用 ``\\b(SET|MERGE|DELETE|CREATE|REMOVE)\\b`` 词边界
+    正则（不区分大小写）——``SET `` 标准写法、``SET(`` 无空格变体均被拦截；
+    只读语句（``MATCH (n) RETURN n``）正常放行。
+
     Raises:
         ValueError: 包含禁止的写操作关键字。
     """
     if not query or not isinstance(query, str):
         raise ValueError("query 必须是非空字符串")
     q_upper = query.upper()
+    # 1) 单关键词：词边界正则（\b 保证是独立单词，`SET(` / `SET (` 均命中）
     for kw in _FORBIDDEN_CYPHER_KEYWORDS:
-        if kw.upper() in q_upper:
+        if re.search(rf"\b{re.escape(kw)}\b", q_upper):
             raise ValueError(
-                f"cypher_query 仅允许只读查询，禁止使用 '{kw.strip()}' "
+                f"cypher_query 仅允许只读查询，禁止使用 '{kw}' "
+                f"（请使用专门的 MCP 工具如 dispatch_work_order 等执行写操作）"
+            )
+    # 2) 多词短语：子串匹配
+    for phrase in _FORBIDDEN_CYPHER_PHRASES:
+        if phrase.upper() in q_upper:
+            raise ValueError(
+                f"cypher_query 仅允许只读查询，禁止使用 '{phrase}' "
                 f"（请使用专门的 MCP 工具如 dispatch_work_order 等执行写操作）"
             )
     # 至少包含一个读关键字

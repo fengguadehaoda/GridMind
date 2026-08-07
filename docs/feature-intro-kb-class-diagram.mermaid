@@ -1,0 +1,197 @@
+%% GridMind 功能介绍知识库化（Feature Intro KB）· 类图
+%% 架构文档：docs/feature-intro-kb-architecture-2026-08-05.md §3.5
+%% 2026-08-05 · 高见远
+classDiagram
+    %% ══════════ 后端 · 领域模型 ══════════
+    class ChunkKind {
+        <<enumeration>>
+        overview
+        view
+        scenario
+        tour
+    }
+
+    class FeatureIntroChunk {
+        +str doc_id
+        +str id
+        +ChunkKind kind
+        +str title
+        +str description
+        +str content
+        +str icon
+        +list~str~ tags
+        +dict payload
+        +int sort_order
+        +str lang
+        +str doc_version
+        +str source
+        +tags_pipe() str
+        +to_row() tuple
+        +from_row(row) FeatureIntroChunk$
+    }
+
+    class FeatureIntroDoc {
+        +str doc_id_prefix
+        +str doc_version
+        +str lang
+        +str title
+        +str source
+        +list~FeatureIntroChunk~ chunks
+        +list~str~ warnings
+        +by_tag(tag) list~FeatureIntroChunk~
+        +validate() list~str~
+    }
+
+    %% ══════════ 后端 · 服务层 ══════════
+    class FeatureIntroParser {
+        <<core.feature_intro.parser>>
+        +parse_document(text, source) FeatureIntroDoc$
+        -_split_front_matter(text) tuple
+        -_iter_sections(body) Iterator
+        -_parse_gm_meta(block) dict
+        -_first_paragraph(prose) str
+        -_auto_tags(kind, id) list~str~
+    }
+
+    class FeatureIntroRepository {
+        <<core.feature_intro.repository>>
+        +str prefix
+        +replace_all(doc) tuple~int,int~
+        +query(tags, kinds, lang) list~FeatureIntroChunk~
+        +get_doc_meta(lang) dict
+        +count(lang) int
+        -_ensure_namespace(conn) None
+    }
+
+    class FeatureIntroService {
+        <<core.feature_intro.service>>
+        -FeatureIntroRepository _repo
+        -Path _default_path
+        +ingest(path, dry_run) IngestResult
+        +load(tags, kinds, lang) FeatureIntroResponse
+        +ensure_ingested() bool
+        -_resolve_path(path) Path
+        -_reindex_vectors() int
+    }
+
+    class IngestResult {
+        +str status
+        +str doc_version
+        +int parsed
+        +int deleted
+        +int inserted
+        +int reindexed
+        +int duration_ms
+        +list~str~ warnings
+    }
+
+    %% ══════════ 后端 · 既有组件（改造）══════════
+    class VectorStore {
+        <<core.vector_store MODIFIED>>
+        +str collection_name
+        -list _chunks
+        -Any _collection
+        +search(query, top_k) list
+        +count() int
+        +reindex_namespace(prefix) int
+        -_load_chunks() None
+    }
+
+    class VectorStoreSingleton {
+        <<core.vector_store NEW>>
+        +get_vector_store() VectorStore$
+        +reset_vector_store() None$
+    }
+
+    class RagEngine {
+        <<core.rag_engine MODIFIED>>
+        +VectorStore vector_store
+        +retrieve(query, top_k, thread_id) RetrievalResult
+        +answer(query, top_k, thread_id) KnowledgeAnswer
+    }
+
+    class Database {
+        <<mcp_tools.db.database MODIFIED>>
+        +init_db() None
+        +get_connection() Connection
+        -_ensure_knowledge_chunks_columns(conn) None
+    }
+
+    %% ══════════ 后端 · API 层 ══════════
+    class FeatureIntroAPI {
+        <<api.main MODIFIED>>
+        +get_feature_intro(tag, kind, lang) FeatureIntroResponse
+        +reload_feature_intro(req) ReloadResult
+    }
+
+    class SeedFeatureIntroCLI {
+        <<scripts.seed_feature_intro>>
+        +main(argv) int
+    }
+
+    %% ══════════ 前端 ══════════
+    class FeatureIntroApiClient {
+        <<web/src/api/featureIntro.ts>>
+        -AxiosInstance http
+        +int TIMEOUT_MS
+        +fetchFeatureIntro(tags, kinds) Promise~FeatureIntroResponse~
+    }
+
+    class FeatureIntroStore {
+        <<web/src/stores/featureIntro.ts Pinia>>
+        +Ref~FeatureIntroChunk~ chunks
+        +Ref~IntroSource~ source
+        +Ref~string~ docVersion
+        +Ref~string~ error
+        -Promise _inflight
+        +ensureLoaded() Promise~void~
+        +refresh() Promise~void~
+        +hydrateFromSession() void
+        -_persistSession() void
+    }
+
+    class UseFeatureIntro {
+        <<web/src/composables/useFeatureIntro.ts>>
+        +scenarios ComputedRef
+        +tourSteps(name) IntroTourStep[]
+        +step3 ComputedRef
+        +source ComputedRef
+        +ensureLoaded() Promise
+        +refresh() Promise
+    }
+
+    class FallbackConstants {
+        <<web/src/types/featureIntro.ts>>
+        +FALLBACK_SCENARIOS$
+        +FALLBACK_TOURS$
+        +FALLBACK_STEP3$
+        +FALLBACK_DOC_VERSION$
+    }
+
+    class OnboardingComponents {
+        <<Step1 Step2 Step3 Tour View MODIFIED>>
+        +setup() void
+    }
+
+    %% ══════════ 关系 ══════════
+    FeatureIntroChunk       --> ChunkKind          : kind
+    FeatureIntroDoc    o-- "17" FeatureIntroChunk  : aggregates
+    FeatureIntroParser      ..> FeatureIntroDoc    : creates
+    FeatureIntroRepository  ..> FeatureIntroChunk  : persists/reads
+    FeatureIntroRepository  --> Database           : get_connection()
+    FeatureIntroService     *-- FeatureIntroRepository : owns
+    FeatureIntroService     ..> FeatureIntroParser : uses
+    FeatureIntroService     ..> IngestResult       : returns
+    FeatureIntroService     ..> VectorStoreSingleton : triggers reindex
+    VectorStoreSingleton    ..> VectorStore        : provides singleton
+    RagEngine               --> VectorStore        : reads channel2
+    VectorStore             --> Database           : loads chunks
+    FeatureIntroAPI         --> FeatureIntroService : delegates
+    SeedFeatureIntroCLI     --> FeatureIntroService : delegates
+
+    FeatureIntroApiClient   ..> FeatureIntroAPI    : HTTP
+    FeatureIntroStore       --> FeatureIntroApiClient : uses
+    FeatureIntroStore       ..> FallbackConstants  : degrades to
+    UseFeatureIntro         --> FeatureIntroStore  : wraps
+    UseFeatureIntro         ..> FallbackConstants  : merges
+    OnboardingComponents    --> UseFeatureIntro    : consumes

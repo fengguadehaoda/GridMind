@@ -17,6 +17,7 @@ from typing import Any
 
 from loguru import logger
 
+from api.schemas import RiskLevel
 from api.schemas.hitl_edit import (
     AUDIT_RETENTION_YEARS,
     AuditLogEntry,
@@ -34,18 +35,22 @@ from api.agents.agent_factory import HIGH_RISK_TOOLS  # noqa: E402
 # ── 内部工具函数 ────────────────────────────────────────────
 
 
-def _retrieve_original_args(thread_id: str) -> dict[str, Any]:
+async def _retrieve_original_args(thread_id: str) -> dict[str, Any]:
     """从 LangGraph checkpointer 取回中断时的原始 args（用于 audit）。
 
     优先尝试 ``pending_tool_plan``（Agent 节点持久化的工具计划），
     若为空则尝试 ``interrupt_args`` 字段。两者均缺失时返回空 dict。
+
+    V1.5.1 T02 改动：改为 ``async def``，使用 ``COMPILED_GRAPH.aget_state``
+    （兼容 AsyncSqliteSaver）。测试场景下若 saver 是 MemorySaver，``aget_state``
+    仍正常工作（LangGraph 1.2.10 编译后的图同时支持 sync/async 访问）。
     """
     try:
         from api.graph import COMPILED_GRAPH
 
         if COMPILED_GRAPH is None:
             return {}
-        snapshot = COMPILED_GRAPH.get_state(
+        snapshot = await COMPILED_GRAPH.aget_state(
             {"configurable": {"thread_id": thread_id}}
         )
         if snapshot is None or snapshot.values is None:
@@ -62,14 +67,17 @@ def _retrieve_original_args(thread_id: str) -> dict[str, Any]:
         return {}
 
 
-def _retrieve_pending_plan(thread_id: str) -> list[dict[str, Any]]:
-    """从 LangGraph checkpointer 取回 ``pending_tool_plan``（用于替换 args）。"""
+async def _retrieve_pending_plan(thread_id: str) -> list[dict[str, Any]]:
+    """从 LangGraph checkpointer 取回 ``pending_tool_plan``（用于替换 args）。
+
+    V1.5.1 T02 改动：``async def`` + ``aget_state``。
+    """
     try:
         from api.graph import COMPILED_GRAPH
 
         if COMPILED_GRAPH is None:
             return []
-        snapshot = COMPILED_GRAPH.get_state(
+        snapshot = await COMPILED_GRAPH.aget_state(
             {"configurable": {"thread_id": thread_id}}
         )
         if snapshot is None or snapshot.values is None:
@@ -81,7 +89,7 @@ def _retrieve_pending_plan(thread_id: str) -> list[dict[str, Any]]:
         return []
 
 
-def _persist_replaced_plan(
+async def _persist_replaced_plan(
     thread_id: str,
     tool_name: str,
     edited_args: dict[str, Any],
@@ -89,13 +97,15 @@ def _persist_replaced_plan(
     """将 pending_tool_plan 中**第一个**匹配 ``tool_name`` 的项的 args 替换。
 
     返回是否替换成功（若 plan 为空或工具不匹配，返回 False，调用方应记录日志）。
+
+    V1.5.1 T02 改动：``async def`` + ``aget_state`` + ``aupdate_state``。
     """
     try:
         from api.graph import COMPILED_GRAPH
 
         if COMPILED_GRAPH is None:
             return False
-        plan = _retrieve_pending_plan(thread_id)
+        plan = await _retrieve_pending_plan(thread_id)
         replaced = False
         for item in plan:
             if not isinstance(item, dict):
@@ -106,7 +116,7 @@ def _persist_replaced_plan(
                 break
         if not replaced:
             return False
-        COMPILED_GRAPH.update_state(
+        await COMPILED_GRAPH.aupdate_state(
             {"configurable": {"thread_id": thread_id}},
             {"pending_tool_plan": plan},
         )
@@ -241,43 +251,80 @@ class HitlAuditService:
     # ── 审计查询 ────────────────────────────────
 
     @staticmethod
-    def query_by_thread(thread_id: str) -> list[dict[str, Any]]:
-        """按 thread_id 查询审计记录（按时间升序）。"""
+    def query_by_thread(
+        thread_id: str,
+        risk_level: RiskLevel | str | None = None,
+    ) -> list[dict[str, Any]]:
+        """按 thread_id 查询审计记录（按时间升序）。
+
+        V1.5.1 新增可选 ``risk_level`` 过滤（架构 §2.4.4）：
+
+        - ``None``（默认）：返回所有风险等级的记录（v1.5.0 行为）
+        - ``RiskLevel.HIGH`` / ``"high"`` 等：仅返回该风险等级的记录
+
+        返回字典含 V1.5.1 新增 3 字段（``risk_level`` / ``pause_count`` /
+        ``edit_count``）；旧库未升级时这 3 字段由 SQLite DEFAULT 填充
+        （``'normal'`` / ``0`` / ``0``）。
+        """
         conn = get_connection()
         try:
-            rows = conn.execute(
-                """
-                SELECT id, thread_id, interrupt_node, tool_name,
-                       user_id, user_name, user_role, decision,
-                       original_args, edited_args, edit_reason,
-                       safety_recheck_result, reason,
-                       ip_address, user_agent, created_at
-                  FROM hitl_audit_log
-                 WHERE thread_id = ?
-                 ORDER BY created_at ASC, id ASC
-                """,
-                (thread_id,),
-            ).fetchall()
+            sql = (
+                "SELECT id, thread_id, interrupt_node, tool_name, "
+                "       user_id, user_name, user_role, decision, "
+                "       original_args, edited_args, edit_reason, "
+                "       safety_recheck_result, reason, "
+                "       ip_address, user_agent, created_at, "
+                "       risk_level, pause_count, edit_count "
+                "  FROM hitl_audit_log "
+                " WHERE thread_id = ?"
+            )
+            params: tuple[Any, ...] = (thread_id,)
+            if risk_level is not None:
+                # 兼容 RiskLevel 枚举与 str 两种入参（API 边界灵活）
+                level_value = (
+                    risk_level.value
+                    if isinstance(risk_level, RiskLevel)
+                    else str(risk_level)
+                )
+                sql += " AND risk_level = ?"
+                params = (thread_id, level_value)
+            sql += " ORDER BY created_at ASC, id ASC"
+            rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
 
     @staticmethod
-    def query_by_decision(decision: str, limit: int = 100) -> list[dict[str, Any]]:
-        """按 decision 枚举查询（用于 QA 验证 / 仪表盘）。"""
+    def query_by_decision(
+        decision: str,
+        limit: int = 100,
+        risk_level: RiskLevel | str | None = None,
+    ) -> list[dict[str, Any]]:
+        """按 decision 枚举查询（用于 QA 验证 / 仪表盘）。
+
+        V1.5.1 新增可选 ``risk_level`` 过滤（架构 §2.4.4）。
+        """
         conn = get_connection()
         try:
-            rows = conn.execute(
-                """
-                SELECT id, thread_id, interrupt_node, tool_name,
-                       user_id, decision, edit_reason, created_at
-                  FROM hitl_audit_log
-                 WHERE decision = ?
-                 ORDER BY created_at DESC
-                 LIMIT ?
-                """,
-                (decision, limit),
-            ).fetchall()
+            sql = (
+                "SELECT id, thread_id, interrupt_node, tool_name, "
+                "       user_id, decision, edit_reason, created_at, "
+                "       risk_level, pause_count, edit_count "
+                "  FROM hitl_audit_log "
+                " WHERE decision = ?"
+            )
+            params: tuple[Any, ...] = (decision,)
+            if risk_level is not None:
+                level_value = (
+                    risk_level.value
+                    if isinstance(risk_level, RiskLevel)
+                    else str(risk_level)
+                )
+                sql += " AND risk_level = ?"
+                params = (decision, level_value)
+            sql += " ORDER BY created_at DESC LIMIT ?"
+            params = params + (limit,)
+            rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
         finally:
             conn.close()
@@ -293,6 +340,40 @@ class HitlAuditService:
 # ═══════════════════════════════════════════════════════
 # Edit & Continue 三步原子：safety 重检 → 写库 → resume
 # ═══════════════════════════════════════════════════════
+
+
+def _decision_without_resume(
+    thread_id: str,
+    action: str,
+    payload: EditInterruptRequest,
+    replaced: bool = False,
+) -> dict[str, Any]:
+    """图未挂起在 interrupt() 上时的决策响应（不 resume）。
+
+    适用两种情形：
+      1. **融合层 HITL**（诊断结论人工复核）——图已跑到 END，本就没有待恢复的
+         中断点，需要的只是"记录调度员决策"；
+      2. **重复提交决策**——同一中断已被批准/拒绝过。
+
+    此时若照旧调用 ``Command(resume=...)``，LangGraph 会从上一个 checkpoint
+    重跑整张图并产生一条重复回答，因此这里直接返回（审计已在上游写入）。
+    """
+    if action == "rejected":
+        text = f"已拒绝该操作（{payload.reason or '未填原因'}），未执行任何变更。"
+    elif action == "edit_approve":
+        text = "已记录修改后批准的决策。"
+    else:
+        text = "已确认该诊断结论，可继续后续处置。"
+    logger.info(
+        "HITL decision recorded without resume (thread={}, action={})",
+        thread_id, action,
+    )
+    return {
+        "thread_id": thread_id,
+        "response": text,
+        "interrupt_required": False,
+        "replaced_plan_item": replaced,
+    }
 
 
 async def process_edit_decision(
@@ -332,29 +413,50 @@ async def process_edit_decision(
     from api.graph import COMPILED_GRAPH
     from langgraph.types import Command
 
-    original_args = _retrieve_original_args(thread_id)
+    original_args = await _retrieve_original_args(thread_id)
     interrupt_node = ""
     tool_name = ""
+    # 图当前是否真的挂起在 interrupt() 上（决定能否 resume，见下方守卫）
+    has_pending_interrupt = False
     # 通过 COMPILED_GRAPH snapshot 取 tool 名（plan 第一项的 name）
     try:
         if COMPILED_GRAPH is not None:
-            snapshot = COMPILED_GRAPH.get_state(
+            snapshot = await COMPILED_GRAPH.aget_state(
                 {"configurable": {"thread_id": thread_id}}
             )
-            if snapshot is not None and snapshot.values is not None:
-                plan = snapshot.values.get("pending_tool_plan") or []
+            if snapshot is not None:
+                values = snapshot.values or {}
+                plan = values.get("pending_tool_plan") or []
+                # 工具名取自 plan 第一项（真实高危工具）
                 if isinstance(plan, list) and plan:
                     first = plan[0]
                     if isinstance(first, dict):
                         tool_name = first.get("name", "") or ""
                         interrupt_node = tool_name
+                # 融合层 HITL 无 pending_tool_plan，用状态里的中断节点兜底
+                if not interrupt_node:
+                    interrupt_node = values.get("interrupt_tool") or ""
+                # 图是否真挂起在 interrupt() 上（决定能否 resume）：
+                # 该 LangGraph 版本下 task.interrupts 即使挂起也是空元组（不可靠），
+                # 故以 snapshot.next 非空（图未跑到 END）作主信号；并以
+                # pending_tool_plan 真实存在做二次确认（融合层 HITL 无 plan 且图
+                # 已 END，不需 resume，否则会重跑整图产生重复回复）。
+                next_nodes = getattr(snapshot, "next", None) or ()
+                has_real_plan = isinstance(plan, list) and len(plan) > 0
+                if next_nodes and has_real_plan:
+                    has_pending_interrupt = True
+                else:
+                    for task in (getattr(snapshot, "tasks", None) or ()):
+                        if getattr(task, "interrupts", None):
+                            has_pending_interrupt = True
+                            break
     except Exception:
         pass
 
     # ── 替换 plan 中的 args（仅 edit_approve） ──────────────
     replaced = False
     if payload.decision == EditDecisionEnum.edit_approve and tool_name:
-        replaced = _persist_replaced_plan(
+        replaced = await _persist_replaced_plan(
             thread_id,
             tool_name,
             payload.edited_args or {},
@@ -415,6 +517,8 @@ async def process_edit_decision(
                 "interrupt_required": False,
                 "rejected_by_safety": True,
             }
+        if not has_pending_interrupt:
+            return _decision_without_resume(thread_id, "edit_approve", payload, replaced)
         # 通过：恢复图执行
         if COMPILED_GRAPH is None:
             raise RuntimeError("LangGraph 未初始化")
@@ -442,6 +546,8 @@ async def process_edit_decision(
 
     # approve / reject 老路径
     action = "approved" if payload.decision == EditDecisionEnum.approve else "rejected"
+    if not has_pending_interrupt:
+        return _decision_without_resume(thread_id, action, payload, replaced)
     if COMPILED_GRAPH is None:
         raise RuntimeError("LangGraph 未初始化")
     result = await COMPILED_GRAPH.ainvoke(

@@ -52,15 +52,28 @@
             :y1="PAD_T"
             :y2="H - PAD_B"
           />
-          <circle
-            v-for="m in metrics"
-            :key="m.key"
-            class="hover-dot"
-            :cx="hoverX"
-            :cy="metricY(m, hoverIdx)"
-            :r="3"
-            :fill="`var(${m.cssVar})`"
-          />
+          <!--
+            v1.5.0 P0-2 状态四重区分（架构 §1.2 实现思路 #5）：
+            异常越界数据点切换 triangle + 红描边；正常数据点保持 circle
+            "异常" 定义：|z-score| > 2（2σ 之外，统计学标准离群点）
+          -->
+          <template v-for="m in metrics" :key="m.key">
+            <!-- 异常点：triangle 形状 + 红描边（独立 layer，叠在原 hover-dot 之上） -->
+            <polygon
+              v-if="metricIsAnomaly(m, hoverIdx)"
+              class="hover-dot hover-dot--anomaly"
+              :points="trianglePoints(hoverX, metricY(m, hoverIdx))"
+            />
+            <!-- 正常点：保持原 circle 渲染 -->
+            <circle
+              v-else
+              class="hover-dot"
+              :cx="hoverX"
+              :cy="metricY(m, hoverIdx)"
+              :r="3"
+              :fill="`var(${m.cssVar})`"
+            />
+          </template>
         </template>
       </svg>
 
@@ -70,12 +83,23 @@
         <div v-for="m in metrics" :key="m.key" class="tooltip-row">
           <span class="tooltip-dot" :style="{ background: `var(${m.cssVar})` }"></span>
           <span class="tooltip-label">{{ m.label }}</span>
-          <span class="tooltip-value">{{ metricText(m, hoverIdx) }}</span>
+          <span
+            class="tooltip-value"
+            :class="{ 'tooltip-value--anomaly': metricIsAnomaly(m, hoverIdx) }"
+          >
+            <span
+              v-if="metricIsAnomaly(m, hoverIdx)"
+              class="tooltip-anomaly-marker"
+              aria-label="异常"
+              title="异常越界（|z-score| > 2）"
+            >▲</span>
+            {{ metricText(m, hoverIdx) }}
+          </span>
         </div>
       </div>
 
       <!-- 图例 -->
-      <div class="chart-legend">
+      <div class="chart-legend" :class="{ 'chart-legend--compact': legendCompact }">
         <div v-for="m in metrics" :key="m.key" class="legend-item">
           <span class="legend-dot" :style="{ background: `var(${m.cssVar})` }"></span>
           <span class="legend-name">{{ m.label }}</span>
@@ -87,10 +111,42 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { TelemetryReading } from '../types'
 
 const props = defineProps<{ telemetry: TelemetryReading[] }>()
+
+/* ── v1.6.0 P1-6：ResizeObserver + 300ms 防抖（布局变化不触发图表重绘卡顿）── */
+const containerWidth = ref(0)
+let resizeObserver: ResizeObserver | null = null
+let resizeTimer: ReturnType<typeof setTimeout> | null = null
+
+function handleResize(entries: ResizeObserverEntry[]): void {
+  const width = entries[0]?.contentRect.width ?? 0
+  if (resizeTimer) clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => {
+    containerWidth.value = width
+  }, 300)
+}
+
+onMounted(() => {
+  const el = wrapRef.value
+  if (el && typeof ResizeObserver !== 'undefined') {
+    resizeObserver = new ResizeObserver(handleResize)
+    resizeObserver.observe(el)
+    containerWidth.value = el.clientWidth
+  }
+})
+
+onUnmounted(() => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  if (resizeTimer) clearTimeout(resizeTimer)
+  resizeTimer = null
+})
+
+/** 紧凑容器时图例改为 2 列（避免换行抖动） */
+const legendCompact = computed(() => containerWidth.value > 0 && containerWidth.value < 480)
 
 /* ── 图表几何参数 ─────────────────── */
 const W = 800
@@ -161,6 +217,35 @@ function linePoints(m: Metric): string {
     .map((d, i) => (d[m.key] === undefined ? '' : `${xPos(i).toFixed(1)},${metricY(m, i).toFixed(1)}`))
     .filter(Boolean)
     .join(' ')
+}
+
+/* ── 异常检测（v1.5.0 P0-2 状态四重区分）── */
+/**
+ * 统计学离群点判定：|z-score| > 2
+ * z-score = (value - mean) / std
+ * 仅在样本数 ≥ 4 时计算（避免单点 std=0 NaN）
+ */
+function metricIsAnomaly(m: Metric, i: number): boolean {
+  const values = metricValues(m)
+  if (values.length < 4) return false
+  const v = data.value[i]?.[m.key]
+  if (v === undefined) return false
+  const mean = values.reduce((a, b) => a + b, 0) / values.length
+  const variance = values.reduce((acc, x) => acc + (x - mean) ** 2, 0) / values.length
+  const std = Math.sqrt(variance)
+  if (std < 1e-9) return false
+  return Math.abs((v - mean) / std) > 2
+}
+
+/**
+ * 三角形 points（hover 异常点的视觉标识）
+ * 中心 (cx, cy)，边长 6（与正常 circle r=3 等效面积近似）
+ * 顶点朝上：top (cx, cy-6) / left-bottom (cx-5.2, cy+3) / right-bottom (cx+5.2, cy+3)
+ */
+function trianglePoints(cx: number, cy: number): string {
+  const h = 6
+  const w = 5.2
+  return `${cx},${cy - h} ${cx - w},${cy + h * 0.6} ${cx + w},${cy + h * 0.6}`
 }
 
 /* ── 刻度 ─────────────────────────── */
@@ -276,6 +361,15 @@ function legendText(m: Metric): string {
   stroke-width: 1.5;
 }
 
+/* v1.5.0 P0-2：异常点视觉（triangle + 红描边，3 重区分）── */
+.hover-dot--anomaly {
+  fill: var(--cb-status-critical-fg, var(--status-danger));
+  stroke: var(--bg-elevated);
+  stroke-width: 2;
+  /* 红色发光提示"这是异常" */
+  filter: drop-shadow(0 0 4px var(--cb-status-critical-fg, var(--status-danger)));
+}
+
 /* ── 悬浮提示 ─────────────────────── */
 .chart-tooltip {
   position: absolute;
@@ -325,6 +419,22 @@ function legendText(m: Metric): string {
   font-family: var(--font-mono);
   font-weight: var(--fw-semibold);
   padding-left: var(--space-3);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tooltip-value--anomaly {
+  color: var(--cb-status-critical-fg, var(--status-danger));
+  font-weight: var(--fw-bold);
+}
+
+.tooltip-anomaly-marker {
+  display: inline-block;
+  color: var(--cb-status-critical-fg, var(--status-danger));
+  font-size: 10px;
+  line-height: 1;
+  transform: translateY(-1px);
 }
 
 /* ── 图例 ─────────────────────────── */
@@ -335,6 +445,15 @@ function legendText(m: Metric): string {
   margin-top: var(--space-3);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-muted);
+}
+
+/* v1.6.0 P1-6：紧凑容器（<480px）图例换行策略 */
+.chart-legend--compact {
+  gap: var(--space-1) var(--space-3);
+}
+
+.chart-legend--compact .legend-item {
+  min-width: calc(50% - var(--space-3));
 }
 
 .legend-item {

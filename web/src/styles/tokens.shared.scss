@@ -72,12 +72,45 @@ $clip-corner-lg: polygon(0 20px, 20px 0, 100% 0, 100% calc(100% - 20px), calc(10
 // 六边形（StatHexagon 使用）
 $clip-hex: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
 
-// 断点
+// 断点（v1.6.0 P1-5 新增 $bp-2xl；语义 tier 见 composables/useViewport.ts）
 $bp-sm: 640px;
 $bp-md: 768px;
 $bp-lg: 1024px;
 $bp-xl: 1280px;
+$bp-2xl: 1920px;
 
 // 栅格
 $grid-cell: 32px;
 $glass-blur: 12px;
+
+// ═══════════════════════════════════════════════════════════════
+// v1.5.0 P0-2 · 色盲 Palette Token 命名规则（架构 §3.5）
+// ═══════════════════════════════════════════════════════════════
+//
+//  标准 palette（v1.4.0 已有）：
+//    --status-{success|warning|danger|info|neutral}-{fg|soft|glow|bg}
+//    例: --status-success-fg
+//
+//  色盲 palette（v1.5.0 新增，由 :root[data-cb-palette] 路由）：
+//    --cb-{palette}-status-{tone}-{fg|soft|glow|bg}
+//    例: --cb-okabe-ito-status-warning-fg
+//
+//  组件中间层（避免组件直接感知 palette）：
+//    --cb-status-{tone}-{fg|soft|glow|bg}
+//    组件引用这一层；CSS 选择器根据 :root[data-cb-palette] 路由到具体 palette
+//    例: --cb-status-warning-fg  (default → var(--status-warning) | okabe-ito → #E69F00)
+//
+//  8 套组合（4 palette × 2 theme）完整 token 在以下文件注入：
+//    - tokens.dark.scss: 4 套 dark 主题 palette
+//    - tokens.light.scss: 4 套 light 主题 palette
+//    - tokens.scss: 实际加载的入口（含 3 套 color-blind 主题无关 + indirection 默认）
+//
+//  本文件（tokens.shared.scss）仅声明 SCSS 变量与命名规则，
+//  **不出现任何 #xxxxxx 颜色字面量**（架构 §3.5 约束）
+//
+//  4 套 palette（主理人决策 #2 采纳）：
+//    - 'default'         红绿黄蓝（GridMind 原生，theme-aware）
+//    - 'ibm-cb-safe'     IBM Carbon Accessibility（蓝/橙/紫/黄）
+//    - 'okabe-ito'       Okabe-Ito 2007（去红绿色盲）
+//    - 'colorbrewer-rdylbu' ColorBrewer RdYlBu（色弱 + 高对比）
+// ═══════════════════════════════════════════════════════════════

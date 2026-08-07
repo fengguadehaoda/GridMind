@@ -1,6 +1,7 @@
 <template>
   <div class="grayscale-panel">
-    <TechBackground intensity="low" :show-glow="true" />
+    <!-- v1.5.0 T02：intensity 由 display store 注入（标准 = off / 演示 = high） -->
+    <TechBackground :intensity="bgIntensity" :show-glow="true" />
 
     <div class="page-content">
       <!-- 页面标题 -->
@@ -23,7 +24,7 @@
       </div>
 
       <!-- 顶部状态卡：4 个统计卡 -->
-      <div class="stats-row">
+      <div class="stats-row" data-tour="grayscale-stats">
         <StatHexagon
           label="当前切流比例"
           :value="`${store.ratio}%`"
@@ -85,6 +86,7 @@
             :disabled="!canSetRatio"
             :loading="opLoading"
             data-test="grayscale-set-btn"
+            data-tour="grayscale-toggle"
             @click="handleSetRatio"
           >
             切流到 {{ targetRatio }}%
@@ -95,6 +97,7 @@
             :disabled="!adminToken"
             :loading="rollbackLoading"
             data-test="grayscale-rollback-btn"
+            data-tour="grayscale-rollback"
             @click="handleManualRollback"
           >
             手动回滚
@@ -112,10 +115,32 @@
         />
       </el-card>
 
+      <!-- v1.6.0 P1-4：KG 灰度可视化（拓扑 + 双模式 + 方案对比，置于手动切流之下） -->
+      <el-card class="viz-card" shadow="hover" data-tour="grayscale-viz">
+        <template #header>
+          <div class="card-head">
+            <span class="card-title">拓扑可视化 · 方案对比</span>
+            <el-tag v-if="graphStore.source === 'mock'" size="small" type="warning" effect="plain">
+              模拟数据（后端 /grayscale/graph 未就绪）
+            </el-tag>
+          </div>
+        </template>
+
+        <GrayscaleModeBar />
+
+        <div class="viz-topology">
+          <TopologyGraph />
+        </div>
+
+        <div class="viz-plans">
+          <PlanComparePanel v-model:adminToken="adminToken" />
+        </div>
+      </el-card>
+
       <!-- 监控窗口 + 历史 图表 -->
       <div class="chart-row">
         <!-- 监控窗口 -->
-        <el-card class="chart-card" shadow="hover">
+        <el-card class="chart-card" shadow="hover" data-tour="grayscale-metrics">
           <template #header>
             <span class="card-title">监控窗口（{{ store.monitor?.window_s ?? 300 }}s 滚动）</span>
           </template>
@@ -147,7 +172,7 @@
         </el-card>
 
         <!-- 切换历史 -->
-        <el-card class="chart-card" shadow="hover">
+        <el-card class="chart-card" shadow="hover" data-tour="grayscale-history">
           <template #header>
             <span class="card-title">切换历史（{{ store.history.length }} 条）</span>
           </template>
@@ -197,9 +222,18 @@ import { ElMessage } from 'element-plus'
 import { Right, Timer } from '@element-plus/icons-vue'
 import TechBackground from '../components/background/TechBackground.vue'
 import StatHexagon from '../components/controls/StatHexagon.vue'
+import GrayscaleModeBar from '../components/grayscale/GrayscaleModeBar.vue'
+import TopologyGraph from '../components/grayscale/TopologyGraph.vue'
+import PlanComparePanel from '../components/grayscale/PlanComparePanel.vue'
 import { useMetricsStore } from '../stores/metrics'
+import { useGrayscaleGraphStore } from '../stores/grayscaleGraph'
+import { useDisplay } from '../composables/useDisplay'
 
 const store = useMetricsStore()
+// v1.6.0 P1-4：灰度图 store（拓扑 / 方案 / 双模式）
+const graphStore = useGrayscaleGraphStore()
+// v1.5.0 T02：解构出 bgIntensity（storeToRefs 保留响应性）
+const { bgIntensity } = useDisplay()
 
 // ── 表单 state ──────────────────────────────────
 const adminToken = ref('')
@@ -318,6 +352,8 @@ async function handleManualRollback() {
 // ── 生命周期：组件挂载时启动轮询，卸载时停止 ────────────────
 onMounted(() => {
   store.startPolling()
+  // v1.6.0 P1-4：加载灰度拓扑图（API 404 → 前端模拟）
+  void graphStore.fetchGraph()
 })
 
 onBeforeUnmount(() => {
@@ -329,7 +365,7 @@ onBeforeUnmount(() => {
 .grayscale-panel {
   position: relative;
   width: 100%;
-  min-height: 100vh;
+  /* 去掉 min-height: 100vh：内容高度由父容器 .app-main（overflow: auto）滚动承载 */
   padding-bottom: 24px;
 }
 .page-content {
@@ -377,6 +413,13 @@ onBeforeUnmount(() => {
   margin-bottom: 20px;
 }
 
+/* v1.6.0 P1-5：紧凑断点 stats-row 下限收窄（自动换行） */
+@media (max-width: 1279.98px) {
+  .stats-row {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+}
+
 .op-card {
   margin-bottom: 20px;
 }
@@ -405,6 +448,17 @@ onBeforeUnmount(() => {
 }
 .op-alert {
   margin-top: 12px;
+}
+
+/* v1.6.0 P1-4：拓扑可视化区块 */
+.viz-card {
+  margin-bottom: 20px;
+}
+.viz-topology {
+  margin-top: 16px;
+}
+.viz-plans {
+  margin-top: 16px;
 }
 
 .chart-row {

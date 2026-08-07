@@ -98,3 +98,42 @@
     border-color: transparent;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════
+// v1.5.0 P0-2 · 色盲 palette 切换关键帧
+// ═══════════════════════════════════════════════════════════════
+// 设计约束（架构 §7.4 性能影响）：
+//   1. palette 切换仅修改 CSS 变量 → 浏览器只触发 repaint，不触发 reflow
+//   2. 关键帧仅作用 opacity / transform（合成层属性），不触发 layout
+//   3. 200ms 切换时长与 BackgroundModeToggle 滑块动画一致
+
+/** 调色板切换：瞬时颜色替换 + 极轻 opacity 反馈，避免感知上的"硬切" */
+@keyframes gm-palette-swap {
+  0% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/**
+ * 调色板切换容器工具类
+ * 用法：在 palette 切换可能影响视觉一致性的容器上加 .gm-palette-swap
+ * 与 prefers-reduced-motion 联动：用户偏好减少动效时，0ms 持续
+ */
+.gm-palette-swap {
+  /* 颜色相关属性的过渡（fill / stroke / background-color / border-color） */
+  transition: color var(--dur-fast, 200ms) var(--ease-out-quint, ease),
+              background-color var(--dur-fast, 200ms) var(--ease-out-quint, ease),
+              border-color var(--dur-fast, 200ms) var(--ease-out-quint, ease),
+              fill var(--dur-fast, 200ms) var(--ease-out-quint, ease),
+              stroke var(--dur-fast, 200ms) var(--ease-out-quint, ease);
+}
+
+/** 减弱动效偏好：禁用调色板过渡，避免长时间晕染 */
+@media (prefers-reduced-motion: reduce) {
+  .gm-palette-swap {
+    transition: none;
+  }
+}

@@ -17,6 +17,7 @@ M2 关键改造（架构 §3.4）：
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -75,13 +76,75 @@ class RagEngine:
     ) -> RetrievalResult:
         """混合检索：向量召回 → 实体抽取 → 灰度路由 → 图谱扩展。
 
+        V1.6 P0-5 · 对话 grounding 优先通道（架构增补件 §1.3）
+            入口处先做意图门控：若用户问「5 个核心视图/功能介绍/引导/演示」
+            等产品类问题，**直接**调用 ``search_feature_intro`` 的 tag 通道
+            召回 5 条功能介绍 chunks，不再走通用 RAG（避免被 25 条电力规程分片
+            挤占）。任何异常 fallback 到原有通用 RAG，不破坏既有行为。
+
         Args:
             query:     用户问题
             top_k:     向量检索 top_k
             thread_id: 会话 ID（用于 GrayscaleRouter 哈希取模）
         """
-        # Step 1: 向量检索
-        vec_results = self.vector_store.search(query, top_k=top_k)
+        # ── V1.6 P0-5 · 意图门控（功能介绍优先 grounding 通道）──
+        # 双保险第一层：即便上层 routing 把问题错配给 knowledge_agent 通用
+        # RAG，也能在 retrieve() 入口拦截、跳转到 feature-intro 通道。
+        _fi_intent: Any = None
+        try:
+            from core.feature_intro.intent import detect as _fi_detect
+            _fi_intent = _fi_detect(query)
+        except Exception as _fi_exc:  # noqa: BLE001 — 意图模块故障不应阻断主流程
+            logger.debug("feature_intro intent detect unavailable: {}", _fi_exc)
+
+        if _fi_intent is not None and _fi_intent.hit:
+            try:
+                from mcp_tools.tools.knowledge_tools import search_feature_intro
+                fi_result = asyncio_run_sync(
+                    search_feature_intro(query, top_k=int(top_k), tag=None),
+                )
+                fi_chunks: list[dict[str, Any]] = (
+                    list(fi_result.get("chunks") or [])
+                    if isinstance(fi_result, dict) else []
+                )
+                fi_text: list[str] = [
+                    (c.get("content") or "").strip()
+                    for c in fi_chunks
+                    if (c.get("content") or "").strip()
+                ]
+                # 结构化 JSON 日志（便于后续统计「新手问题被路由到功能介绍」）
+                logger.info(
+                    json.dumps(
+                        {
+                            "event": "feature_intro_gate",
+                            "thread_id": thread_id,
+                            "query": (query or "")[:80],
+                            "intent_hit": True,
+                            "intent_score": _fi_intent.score,
+                            "intent_kind": _fi_intent.intent,
+                            "intent_matched": list(_fi_intent.matched),
+                            "chunks": len(fi_text),
+                            "timestamp": time.time(),
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
+                if fi_text:
+                    # 把 chunks 注入 vector_chunks，让下游 answer() 的
+                    # _build_context + _generate 走同一条拼接链路。
+                    return RetrievalResult(
+                        vector_chunks=fi_text,
+                        graph_entities=[],
+                        graph_paths=[],
+                        confidence=0.95,
+                    )
+            except Exception as exc:  # noqa: BLE001 — 降级到通用 RAG（不抛错）
+                logger.warning(
+                    "feature_intro gate fallback to normal RAG: {}", exc,
+                )
+
+        # Step 1: 向量检索（业务查询，不召回 feature-intro 命名空间避免 RAG 反向污染）
+        vec_results = self.vector_store.search(query, top_k=top_k, exclude_tags=["feature-intro"])
         vector_chunks = [r["content"] for r in vec_results]
 
         # Step 2: 从向量结果中提取实体（保留 M0 正则 + device_map 兜底）
@@ -466,19 +529,31 @@ def asyncio_run_sync(coro: Any) -> Any:
 
     RAG 引擎本身是同步方法，但 mcp_tools.neo4j_tools 是 async。
     这里提供一个简单的 sync wrapper：
-    - 如果当前有 event loop 在运行，则用 loop.run_until_complete
-    - 否则用 asyncio.run
+    - 当前**没有**运行中的事件循环 → ``asyncio.run``（正常路径）
+    - 当前**有**运行中的事件循环 → 同步等待必然阻塞事件循环（B1）：
+      生产 async 调用方必须改走 :func:`asyncio_run_sync_async` 并 ``await``；
+      此处**快速失败**并给出指引，避免 ``future.result(timeout=10)``
+      把整个服务冻结 10s。
     """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
     if loop is not None:
-        # 在 event loop 中：返回 future（让调用方 await）
-        # 但 RAG 是同步接口，这里使用 nest_asyncio 不安全，故采用线程池 fallback
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(asyncio.run, coro)
-            return future.result(timeout=10.0)
-    else:
-        return asyncio.run(coro)
+        raise RuntimeError(
+            "asyncio_run_sync 被在运行中的事件循环内调用（会阻塞事件循环，B1）。"
+            "请改用 asyncio_run_sync_async(coro) 并在 async 函数中 await。"
+        )
+    return asyncio.run(coro)
+
+
+async def asyncio_run_sync_async(coro: Any) -> Any:
+    """async 版 ``asyncio_run_sync``——协程在工作线程中运行，不阻塞事件循环。
+
+    B1 修复：RAG 同步链路（``retrieve`` / ``answer``）由 async 入口调用时，
+    若直接在事件循环内 ``asyncio.run(coro)`` 或 ``future.result(timeout)`` 会
+    冻结整个服务；本函数把协程放到线程池执行（等价
+    ``await asyncio.wrap_future(loop.run_in_executor(...))``），事件循环保持可响应。
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: asyncio.run(coro))

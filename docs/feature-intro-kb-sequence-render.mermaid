@@ -1,0 +1,79 @@
+%% GridMind 功能介绍知识库化 · 时序二：前端读取与渲染（含降级 P0-3 / P0-4）
+%% 架构文档：docs/feature-intro-kb-architecture-2026-08-05.md §4.2
+%% 2026-08-05 · 高见远
+sequenceDiagram
+    autonumber
+    participant U as 新用户
+    participant V as OnboardingView
+    participant C as useFeatureIntro()
+    participant S as featureIntroStore
+    participant SS as sessionStorage
+    participant Ax as api/featureIntro.ts
+    participant BE as GET /knowledge/feature-intro
+    participant Repo as FeatureIntroRepository
+    participant DB as SQLite
+
+    U->>V: 首次访问 → 路由守卫跳 /onboarding
+    V->>C: useFeatureIntro()
+    C->>S: hydrateFromSession()
+    S->>SS: getItem('gridmind.featureIntro.cache')
+
+    alt 有缓存且未过期（TTL 10min，docVersion 一致）
+        SS-->>S: {chunks, docVersion, ts}
+        S->>S: source = 'remote'
+        Note right of S: 命中缓存，跳过网络
+    else 无缓存 / 已过期
+        SS-->>S: null
+        S->>S: source = 'loading'
+    end
+
+    Note over V,C: ★ 关键：此刻立即渲染，不等网络
+    C-->>V: scenarios = FALLBACK_SCENARIOS（同步返回，恒非空）
+    V-->>U: 场景卡立即可见（0ms 白屏）
+
+    V->>C: ensureLoaded()  (onMounted，非阻塞)
+    C->>S: ensureLoaded()
+    alt 已有 _inflight Promise
+        S-->>C: 复用同一 Promise（并发合并，避免 4 个组件打 4 次请求）
+    end
+    S->>Ax: fetchFeatureIntro()
+    Ax->>BE: GET /api/knowledge/feature-intro  (timeout 2500ms)
+
+    alt 成功
+        BE->>Repo: query(tags=None, kinds=None, lang='zh-CN')
+        Repo->>DB: SELECT ... WHERE doc_id LIKE 'feature-intro/%' AND lang=? ORDER BY sort_order
+        DB-->>Repo: 17 rows
+        Repo-->>BE: chunks
+        BE-->>Ax: 200 {doc_version, count:17, chunks}
+        Ax-->>S: FeatureIntroResponse
+        S->>S: 逐 chunk 校验（id/title 非空、kind 合法）
+        alt schema 校验失败
+            S->>S: source='fallback', error='schema invalid'
+            Note right of S: 脏数据不进 UI
+        else
+            S->>S: chunks=..., source='remote'
+            S->>SS: setItem(cache)
+        end
+        C-->>V: scenarios 响应式更新为远端文案
+        V-->>U: 文案平滑替换（同结构，无布局跳动）
+
+    else 503 未入仓 / 网络错 / 超时 2.5s / 非 2xx
+        BE-->>Ax: 503 | timeout | ERR_NETWORK
+        Ax-->>S: throw
+        S->>S: source='fallback', error=失败原因
+        Note right of S: console.warn 一次，不弹 ElMessage<br/>（引导页不该给新用户报错）
+        C-->>V: 保持 FALLBACK_SCENARIOS
+        V-->>U: 引导正常进行，用户无感知
+    end
+
+    Note over U,DB: ── 单页 tour 启动（锚点防漂移）──
+    U->>V: 进入 /monitor?tour=monitor
+    V->>C: tourSteps('monitor')
+    C->>C: 取 store 中 tour:monitor 的 payload.steps
+    alt 远端有该 tour 且 steps 非空且选择器格式合法
+        C-->>V: 远端 steps
+    else
+        C-->>V: FALLBACK_TOURS['monitor']
+    end
+    Note right of V: ★ 返回的是快照数组（非 computed）<br/>driver.setSteps() 后即使远端数据到达<br/>也不会中途换锚点导致高亮漂移
+    V->>V: driver.setSteps(snapshot) → drive()

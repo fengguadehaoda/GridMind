@@ -52,7 +52,8 @@ def neo4j_available() -> bool:
 
 
 def _run_async(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # QA 修复：asyncio.run 避免 Python 3.13 组合测试时 "no current event loop"
+    return asyncio.run(coro)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

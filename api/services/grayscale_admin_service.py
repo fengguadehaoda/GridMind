@@ -76,6 +76,38 @@ class GrayscaleAdminService:
         return router.get_history(limit=limit)
 
     @staticmethod
+    def get_metrics() -> dict[str, Any]:
+        """聚合灰度统计指标（端点用）。
+
+        来源：复用 ``GrayscaleRouter.get_status()`` 快照 + sync_log 统计。
+        返回字段：
+        - ok: bool
+        - state / ratio / neo4j_enabled / started_at
+        - rollback_count / rollback_reason
+        - switch_count: 累计切换次数（含 off→gray10 等）
+        - last_switch: 最近一次切换记录（含 actor / timestamp / prev state）
+        - monitor: 5 分钟滚动窗口统计（samples / error_rate / p95）
+        - sync_log_stats: ChromaSync 状态分布（pending/synced/failed）
+        """
+        router = get_grayscale_router()
+        status = router.get_status()
+        history = status.get("history", [])
+        last_switch = history[-1] if history else None
+        return {
+            "ok": True,
+            "state": status.get("state"),
+            "ratio": status.get("ratio"),
+            "neo4j_enabled": status.get("neo4j_enabled"),
+            "started_at": status.get("started_at"),
+            "rollback_count": status.get("rollback_count"),
+            "rollback_reason": status.get("rollback_reason"),
+            "switch_count": len(history),
+            "last_switch": last_switch,
+            "monitor": status.get("monitor", {}),
+            "sync_log_stats": GrayscaleAdminService.get_sync_log_stats(),
+        }
+
+    @staticmethod
     def get_sync_log_recent(limit: int = 50) -> list[dict[str, Any]]:
         """获取 sync_log 最近记录。"""
         return get_sync_log_service().get_recent(limit=limit)

@@ -9,8 +9,8 @@
 5. **AGENT_TOOLS_MAP 注册**：knowledge_agent 包含 5 个新工具
 6. **server.py 注册**：5 个新 @mcp.tool 函数
 
-运行：
-    cd "F:/GridOpsAgent" && PYTHONPATH=. python tests/test_kg_m1_tools.py
+运行（D4：改用相对项目根，避免硬编码旧路径）：
+    cd <项目根> && PYTHONPATH=. python -m pytest tests/test_kg_m1_tools.py -q
 """
 
 from __future__ import annotations
@@ -56,8 +56,9 @@ def neo4j_available() -> bool:
 
 
 def _run_async(coro):
-    """运行异步 coroutine（兼容 Python 3.10+）。"""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    """运行异步 coroutine（QA 修复：改用 asyncio.run，避免 Python 3.13 下
+    ``asyncio.get_event_loop()`` 在组合测试时抛 "There is no current event loop"）。"""
+    return asyncio.run(coro)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -212,8 +213,8 @@ class TestScenario04ServerRegistration(unittest.TestCase):
 
     def test_server_module_references_neo4j_tools(self) -> None:
         """server.py 引用了 neo4j_tools 模块。"""
-        from pathlib import Path
-        server_py = Path("F:/GridOpsAgent/mcp_tools/server.py").read_text(encoding="utf-8")
+        # D4：硬编码 F:/GridOpsAgent 旧路径 → 相对项目根（ROOT 在文件顶部定义）
+        server_py = (ROOT / "mcp_tools" / "server.py").read_text(encoding="utf-8")
         for tool in ["cypher_query", "multi_hop_expand", "find_devices_by_substation",
                      "get_fault_chain", "get_applicable_regulations"]:
             self.assertIn(tool, server_py, f"server.py 未注册工具 {tool}")

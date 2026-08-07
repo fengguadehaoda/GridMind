@@ -4,6 +4,9 @@
  * - SVG 网格底纹
  * - 顶部径向光晕（暗主题显眼，亮主题降级）
  * - 双主题自动适配
+ * - v1.5.0 T02：支持 'off' 强度（标准模式直接 opacity=0，保留 DOM 避免重渲染）
+ *   不使用 v-if（架构 §7.4 性能约束）—— intensity='off' 时 gridOpacity / glowOpacity 都=0
+ *   SVG 仍渲染但不可见，切换时无组件销毁 / 无布局抖动
  */
 import { computed } from 'vue'
 import { useTheme } from '@/composables/useTheme'
@@ -20,6 +23,7 @@ const { isDark } = useTheme()
 const prefersReducedMotion = useReducedMotion()
 
 const gridOpacity = computed(() => {
+  if (props.intensity === 'off') return 0
   if (!props.showGrid) return 0
   const base = isDark.value ? 0.6 : 0.4
   const factor = props.intensity === 'low' ? 0.5 : props.intensity === 'high' ? 1 : 0.75
@@ -27,12 +31,18 @@ const gridOpacity = computed(() => {
 })
 
 const glowOpacity = computed(() => {
+  if (props.intensity === 'off') return 0
   if (!props.showGlow) return 0
   if (!isDark.value) return 0.15 // 亮主题大幅降级
   return props.intensity === 'low' ? 0.3 : props.intensity === 'high' ? 0.7 : 0.5
 })
 
 const gridColor = computed(() => 'var(--grid-color)')
+
+/** 是否启用 glow 脉冲动画（off 时不动画以省 GPU） */
+const glowAnimated = computed(
+  () => !prefersReducedMotion.value && props.intensity !== 'off',
+)
 </script>
 
 <template>
@@ -69,7 +79,7 @@ const gridColor = computed(() => 'var(--grid-color)')
     <div
       v-if="showGlow"
       class="gm-tech-bg__glow"
-      :class="{ 'gm-tech-bg__glow--animated': !prefersReducedMotion }"
+      :class="{ 'gm-tech-bg__glow--animated': glowAnimated }"
       :style="{ opacity: glowOpacity }"
     />
   </div>
@@ -89,6 +99,7 @@ const gridColor = computed(() => 'var(--grid-color)')
   inset: 0;
   width: 100%;
   height: 100%;
+  transition: opacity var(--dur-base) var(--ease-out-quint);
 }
 
 .gm-tech-bg__glow {

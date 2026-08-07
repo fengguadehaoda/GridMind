@@ -1,0 +1,64 @@
+# GridMind 灵枢电网 — 根编排（app + neo4j）（D1）
+# ---------------------------------------------------------------------------
+# 使用方式（仓库根目录执行）：
+#   docker compose up -d --build
+# 访问：
+#   FastAPI:  http://localhost:9900/docs
+#   MCP:      http://localhost:9901
+#   Neo4j:    http://localhost:7474   (Bolt: bolt://localhost:7687)
+#
+# 注意：docker/neo4j/docker-compose.yml 是独立 Neo4j 单容器编排（供脚本
+#   scripts/start_neo4j.py 使用）；本文件是一体化编排。二者勿同时启动，
+#   否则 7474/7687 端口与容器名 gridmind-neo4j 会冲突。
+# ---------------------------------------------------------------------------
+
+services:
+  app:
+    build: .
+    container_name: gridmind-app
+    restart: unless-stopped
+    ports:
+      - "9900:9900"   # FastAPI
+      - "9901:9901"   # MCP Server
+    env_file:
+      - .env
+    volumes:
+      # SQLite / Chroma 持久化（data/chroma_db 已在 .gitignore 忽略）
+      - ./data:/app/data
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "9900"]
+
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: gridmind-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"   # HTTP Browser
+      - "7687:7687"   # Bolt
+    volumes:
+      # 持久化图谱数据（./docker-data/ 相对仓库根目录，已在 .gitignore 忽略）
+      - ./docker-data/neo4j/data:/data
+      - ./docker-data/neo4j/logs:/logs
+      - ./docker-data/neo4j/import:/var/lib/neo4j/import
+      - ./docker-data/neo4j/plugins:/plugins
+    environment:
+      # 鉴权（M0 阶段单一 admin 账户；M1+ 拆分 read-only / read-write）
+      - NEO4J_AUTH=neo4j/gridmind-dev
+      # 关闭强约束（社区版无法做 causal cluster）
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      # 内存（开发环境默认 1G heap + 512M pagecache）
+      - NEO4J_dbms_memory_heap_max__size=1G
+      - NEO4J_dbms_memory_pagecache_size=512M
+      # 默认数据库名（M0 单库）
+      - NEO4J_default__database=neo4j
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "wget -qO- http://localhost:7474 || exit 1"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

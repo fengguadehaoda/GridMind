@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # ── DashScope ────────────────────────────────────────
     dashscope_api_key: str = os.getenv("DASHSCOPE_API_KEY", "sk-placeholder")
 
+    # ── DeepSeek ─────────────────────────────────────────
+    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
+
+    # ── LLM 默认 / 当前模型 ────────────────────────────────
+    default_model: str = os.getenv("DEFAULT_MODEL", "qwen-plus")
+
     # ── 数据库 ──────────────────────────────────────────
     database_path: str = str(
         ROOT_DIR / os.getenv("DATABASE_PATH", "data/gridmind.db")
@@ -87,6 +93,30 @@ class Settings(BaseSettings):
     # 灰度管理 admin token（环境变量配置）
     admin_token: str = os.getenv("ADMIN_TOKEN", "gridmind-admin-token")
 
+    # ── V1.5.1 T06 安全补丁（SSE 鉴权 + 限流）──────────
+    # JWT 签名密钥（**生产必须**通过 JWT_SECRET 环境变量覆盖默认值）
+    jwt_secret: str = os.getenv("JWT_SECRET", "gridmind-dev-secret-change-in-prod")
+    # JWT 签名算法（默认 HS256；如需 RS256 配 JWKS 则改 RSA 密钥对）
+    jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
+    # JWT 签发方（issuer claim），验证 token 必需匹配
+    jwt_issuer: str = os.getenv("JWT_ISSUER", "gridmind")
+    # admin 端点 IP 维度限流（次/分钟），slowapi 用
+    rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
+
+    # ── B5：生产环境安全开关 ──────────────────────────
+    # APP_ENV=production（或 PRODUCTION=1）时启用生产安全策略：
+    # - JWT_SECRET / ADMIN_TOKEN 仍为公开默认值 → 启动拒绝（见模块底部门禁）
+    # - 数据读取端点强制 JWT 鉴权（api/services/auth.verify_jwt_if_prod）
+    # 未设置 APP_ENV（默认 dev）时行为保持原样，本地开发零配置。
+    APP_ENV: str = os.getenv("APP_ENV", "dev").strip().lower()
+
+    @property
+    def is_production(self) -> bool:
+        """生产模式判定：``APP_ENV=production`` 或 ``PRODUCTION=1``。"""
+        if (self.APP_ENV or "dev").strip().lower() == "production":
+            return True
+        return os.getenv("PRODUCTION", "0").strip().lower() in ("1", "true", "yes")
+
     # ── M3a 推理能力增强配置（新增）─────────────────────
     # 1. Cypher 模板注册中心开关（默认 True —— M3a 启动即生效）
     template_registry_enabled: bool = os.getenv(
@@ -123,3 +153,25 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# ═══════════════════════════════════════════════════════
+# B5：生产模式安全门禁——公开默认密钥必须被 .env 覆盖，否则拒绝启动
+# ═══════════════════════════════════════════════════════
+if settings.is_production:
+    _DEFAULT_JWT_SECRET = "gridmind-dev-secret-change-in-prod"
+    _DEFAULT_ADMIN_TOKEN = "gridmind-admin-token"
+    if not settings.jwt_secret or settings.jwt_secret == _DEFAULT_JWT_SECRET:
+        raise SystemExit(
+            "[FATAL] APP_ENV=production 但 JWT_SECRET 仍为公开默认值或未配置。\n"
+            "        请在 .env 中设置强随机 JWT_SECRET（如 `openssl rand -hex 32`）后重试。"
+        )
+    if not settings.admin_token or settings.admin_token == _DEFAULT_ADMIN_TOKEN:
+        raise SystemExit(
+            "[FATAL] APP_ENV=production 但 ADMIN_TOKEN 仍为公开默认值或未配置。\n"
+            "        请在 .env 中设置强随机 ADMIN_TOKEN 后重试。"
+        )
+    if settings.neo4j_enabled and settings.neo4j_password == "gridmind-dev":
+        print(
+            "[WARN] APP_ENV=production 且 NEO4J_ENABLED=true，但 NEO4J_PASSWORD "
+            "仍为公开默认值，建议在 .env 中覆盖。"
+        )

@@ -154,6 +154,17 @@ async def search_knowledge_chunks(query: str, top_k: int = 3) -> str:
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
+# V1.6 P0-5 增补件 §1.7 · 优先 grounding 工具
+# docstring 即 LLM 的工具选择依据：功能介绍 / 视图 / 引导 / 演示 类问题应优先使用本工具
+@mcp.tool(description="【V1.6 P0-5】检索 GridMind 功能介绍文档（产品功能/视图/引导/演示类问题的优先 grounding 通道）；非功能介绍类问题返回 count=0，由上层走通用 RAG。参数：query-问题, top_k-返回条数(默认5), tag-可选子tag(默认由意图推导)")
+async def search_feature_intro(query: str, top_k: int = 5, tag: str | None = None) -> str:
+    """优先通道：意图门控 + tag 过滤，跳过图谱扩展，避免被 25 条电力规程分片挤占。"""
+    import json
+    from mcp_tools.tools.knowledge_tools import search_feature_intro as _fn
+    result = await _fn(query, top_k, tag)
+    return json.dumps(result, ensure_ascii=False, default=str)
+
+
 @mcp.tool(description="搜索图谱实体，参数：keyword-关键词")
 async def search_graph_entities(keyword: str) -> str:
     from mcp_tools.tools.knowledge_tools import search_graph_entities as _fn

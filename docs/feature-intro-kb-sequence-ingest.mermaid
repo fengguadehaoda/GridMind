@@ -1,0 +1,91 @@
+%% GridMind 功能介绍知识库化 · 时序一：文档入仓（启动 / CLI / API 热更新）
+%% 架构文档：docs/feature-intro-kb-architecture-2026-08-05.md §4.1
+%% 2026-08-05 · 高见远
+sequenceDiagram
+    autonumber
+    participant Ops as 运营/产品
+    participant CLI as scripts.seed_feature_intro
+    participant API as FastAPI /knowledge/feature-intro/reload
+    participant Life as api.main lifespan
+    participant Svc as FeatureIntroService
+    participant P as FeatureIntroParser
+    participant Repo as FeatureIntroRepository
+    participant DB as SQLite knowledge_chunks
+    participant VS as VectorStore 单例
+    participant Ch as Chroma knowledge_base
+
+    Note over Ops,Ch: ── 入口 A：服务启动自动入仓（幂等）──
+    Life->>Svc: ensure_ingested()
+    Svc->>Repo: count(lang="zh-CN")
+    Repo->>DB: SELECT COUNT(*) WHERE doc_id LIKE 'feature-intro/%'
+    DB-->>Repo: 0
+    Repo-->>Svc: 0
+    Note right of Svc: 计数为 0 → 首次启动，走 ingest；<br/>已存在且 doc_version 未变 → 跳过
+    Svc->>Svc: ingest(default_path, dry_run=False)
+
+    Note over Ops,Ch: ── 入口 B：CLI 手动重新入仓 ──
+    Ops->>CLI: python -m scripts.seed_feature_intro --reload
+    CLI->>Svc: ingest(path=None, dry_run=False)
+
+    Note over Ops,Ch: ── 入口 C：API 热更新（P1-2）──
+    Ops->>API: POST /reload  (X-Admin-Token)
+    API->>API: verify_admin_token() + limiter
+    alt token 缺失/错误
+        API-->>Ops: 401 / 403
+    end
+    API->>Svc: ingest(req.path, req.dry_run)
+
+    Note over Svc,Ch: ══ 共同主链路 ══
+    Svc->>Svc: _resolve_path() 校验未逃逸项目根
+    alt 文件不存在
+        Svc-->>API: FileNotFoundError → 404
+    end
+    Svc->>P: parse_document(text, source)
+    P->>P: 拆文档级 front-matter (---)
+    loop 每个带 gm-meta 的章节
+        P->>P: 读标题 → 解析 yaml gm-meta → 抽正文
+        P->>P: 自动注入 tags: feature-intro / kind:{kind}
+        P->>P: description = 正文首段
+    end
+    P->>P: validate(): id 唯一 / 必填齐全 / tour.steps 选择器格式
+    alt 校验失败
+        P-->>Svc: errors[]
+        Svc-->>API: 422 (首条错误 + 行号)
+    end
+    P-->>Svc: FeatureIntroDoc(17 chunks, warnings[])
+
+    alt dry_run = true
+        Svc-->>API: IngestResult(status="dry_run", parsed=17)
+        API-->>Ops: 200 (未落库)
+    end
+
+    Svc->>Repo: replace_all(doc)
+    Repo->>DB: BEGIN
+    Repo->>DB: DELETE WHERE doc_id LIKE 'feature-intro/%' AND lang=?
+    Repo->>DB: INSERT ×17 (含 tags/payload/lang/doc_version/sort_order/updated_at)
+    alt DB 异常
+        Repo->>DB: ROLLBACK
+        Note right of DB: 旧分片完整保留，无空窗
+        Repo-->>Svc: raise
+        Svc-->>API: 500
+    end
+    Repo->>DB: COMMIT
+    Repo-->>Svc: (deleted=17, inserted=17)
+
+    Svc->>VS: get_vector_store().reindex_namespace("feature-intro/")
+    VS->>Ch: delete(ids=[fi::...] ×17)  清理旧向量
+    VS->>DB: SELECT * WHERE doc_id LIKE 'feature-intro/%'
+    VS->>VS: _get_embedding(texts)  DashScope
+    alt embedding 不可用（无 Key / 断网）
+        VS->>VS: 跳过向量写入，仅刷新内存 _chunks
+        Note right of VS: 关键词 fallback 仍可检索<br/>通道 ① 完全不受影响
+        VS-->>Svc: 0
+    else
+        VS->>Ch: add(ids=fi::doc_id, embeddings, metadatas)
+        Ch-->>VS: ok
+        VS-->>Svc: 17
+    end
+    VS->>VS: 刷新 self._chunks（全进程单例，RagEngine 同步生效）
+
+    Svc-->>API: IngestResult(status="ok", parsed/deleted/inserted/reindexed, warnings)
+    API-->>Ops: 200 JSON

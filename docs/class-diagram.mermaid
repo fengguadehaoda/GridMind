@@ -1,130 +1,69 @@
----
-note: M2 阶段核心类图
----
-
-```mermaid
 classDiagram
-    class GrayscaleRouter {
-        -_state: str
-        -_ratio: int
-        -_started_at: float
-        -_monitor: RollbackMonitor
-        -_rollback_reason: str
-        +should_use_neo4j(thread_id) bool
-        +set_ratio(ratio: int) void
-        +record_request(error, latency_ms, backend) void
-        +trigger_rollback(reason: str) void
-        +get_status() dict
-    }
-    class RollbackMonitor {
-        -_window_s: int
-        -_error_rate_threshold: float
-        -_p95_threshold_ms: float
-        -_neo4j_fail_threshold: int
-        -_samples: deque
-        -_neo4j_consecutive_failures: int
-        +record(error, latency_ms, backend) void
-        +should_rollback() bool
-        +get_stats() dict
-    }
-    class ChromaSyncService {
-        -_queue: asyncio.Queue
-        -_worker_task: Task
-        -_timer_task: Task
-        -_neo4j_client: KGClient
-        -_vector_store: VectorStore
-        -_running: bool
-        +start() void
-        +stop() void
-        +enqueue_event(entity_id, source) void
-        -_worker() void
-        -_timer_loop() void
-        -_sync_node_to_chroma(entity_id) dict
-        -_resolve_conflict(neo4j_node, chroma_meta) dict
-    }
-    class SyncLogService {
-        -_conn_factory: Callable
-        +log_pending(sync_type, entity_id, thread_id) int
-        +log_success(id, duration_ms) void
-        +log_failed(id, error, retry_count) void
-        +log_conflict(id) void
-        +log_rollback_event(reason) void
-        +get_recent(limit) list
-        +count_by_status() dict
-        +query_by_entity(entity_id) list
-    }
-    class RagEngine {
-        -_vector_store: VectorStore
-        -_knowledge_graph: KnowledgeGraph
-        -_api_key: str
-        +retrieve(query, top_k, thread_id) RetrievalResult
-        +answer(query, top_k, thread_id) KnowledgeAnswer
-        -_expand_via_neo4j(seed_ids, query) tuple
-        -_expand_via_networkx(seed_ids) tuple
-        -_extract_entity_ids(text) list
-        -_record_rag_metrics(use_neo4j, error, latency_ms) void
-    }
-    class KGClient {
-        -backend: KGBackend
-        -_failure_count: int
-        -_last_health_check: float
-        +current_backend_name: str
-        +failure_count: int
-        +get_entity(eid) dict
-        +search_entities(query, limit, type_filter) list
-        +get_relations(eid, relation_type) list
-        +expand_entities(seed_ids, hops) tuple
-        +cypher_query(query, params) list
-        +ping() bool
-    }
-    class NetworkXBackend {
-        -_kg: KnowledgeGraph
-        +name: str
-        +get_entity(eid) dict
-        +search_entities(query, limit) list
-        +expand_entities(seed_ids, hops) tuple
-        +cypher_query(query, params) list
-        +ping() bool
-    }
-    class Neo4jBackend {
-        -_driver: GraphDatabase
-        -uri: str
-        -user: str
-        -password: str
-        -database: str
-        +name: str
-        +get_entity(eid) dict
-        +search_entities(query, limit) list
-        +expand_entities(seed_ids, hops) tuple
-        +cypher_query(query, params) list
-        +ping() bool
-    }
     class VectorStore {
-        -_client: Any
-        -_collection: Any
-        -_chunks: list
-        +search(query, top_k) list
+        +str collection_name
+        +list _chunks
+        +str _revision
+        +upsert_chunks(chunks: list[dict]) int
+        +delete_chunks(doc_id: str) int  <<NEW>>
+        +search(query: str, top_k: int, exclude_tags: list[str]|None) list[dict]
+        +search_by_tag(tag: str|None, top_k: int) list[dict]
+        +ensure_fresh() bool
+        +reload() int
         +count() int
-        +update_metadata(chunk_id, metadata) void
-    }
-    class GrayscaleAdminService {
-        -_admin_token: str
-        +set_ratio(ratio, actor, token) dict
-        +get_status() dict
-        +trigger_manual_rollback(reason, actor) dict
-        -_validate_token(token) bool
     }
 
-    GrayscaleRouter --> RollbackMonitor
-    GrayscaleRouter --> SyncLogService
-    ChromaSyncService --> KGClient
-    ChromaSyncService --> SyncLogService
-    ChromaSyncService ..> VectorStore : writes metadata
-    RagEngine --> GrayscaleRouter
-    RagEngine --> KGClient
-    RagEngine --> VectorStore
-    KGClient --> NetworkXBackend
-    KGClient --> Neo4jBackend
-    GrayscaleAdminService --> GrayscaleRouter
-    GrayscaleAdminService --> SyncLogService
-```
+    class KbUploadService {
+        +str DOC_ID_PREFIX = "user-upload"
+        +str ROOT_TAG = "user-upload"
+        +int MAX_FILE_BYTES = 5 * 1024 * 1024
+        +frozenset ALLOWED_EXT = {".txt", ".md"}
+        +ingest(filename: str, data: bytes, title: str|None) UploadResult
+        +list_docs() list[KbUploadItem]
+        +delete(doc_id: str) int
+        -_detect_encoding(data: bytes) str
+        -_split_text(text: str, ext: str) list[str]
+        -_build_chunks(filename, title, text) list[dict]
+        +build_doc_id(filename: str) str  <<staticmethod>>
+    }
+
+    class UploadResponse {
+        +str doc_id
+        +str title
+        +str filename
+        +int size_bytes
+        +int chunk_count
+        +str status = "ok"
+    }
+
+    class KbUploadItem {
+        +str doc_id
+        +str filename
+        +str title
+        +int size_bytes
+        +str uploaded_at
+        +int chunk_count
+        +str status = "ok"
+    }
+
+    class KbUploadListResponse {
+        +list[KbUploadItem] items
+        +int total
+    }
+
+    class DeleteResponse {
+        +str status = "ok"
+        +str doc_id
+        +int deleted_chunks
+    }
+
+    class UploadError {
+        +str code
+        +str message
+        +int http_status
+    }
+
+    KbUploadService --> VectorStore : 复用单例 get_vector_store()
+    KbUploadService ..> UploadResponse : 构造
+    KbUploadService ..> KbUploadItem : 构造
+    KbUploadService ..> UploadError : 抛出
+    KbUploadListResponse o-- KbUploadItem : items

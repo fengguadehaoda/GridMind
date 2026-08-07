@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 
@@ -19,7 +20,14 @@ from core.kg_reasoning_rules import (
     RuleTimeoutError,
     TooManyRulesError,
     register_default_rules,
+    reset_rules_engine,
 )
+
+# D5：死循环测试的协作停止标志。threading.Timer 触发后无法强杀线程，
+# 若 condition 是「真死循环」会遗留一个永续空转的 daemon 线程，
+# 拖慢同进程后续所有测试（全量 400s+ 卡死根因）。测试结束后置位停止标志，
+# 让线程尽快退出。
+_STOP_LOOP = threading.Event()
 
 
 class _StubKGClient:
@@ -43,6 +51,12 @@ class TestReasoningRules(unittest.TestCase):
 
     def setUp(self) -> None:
         self.engine = ReasoningRulesEngine(max_rules=3, max_inferred=10)
+
+    def tearDown(self) -> None:
+        # D5：置位停止标志，让超时守护遗留的 Timer 线程尽快退出（避免空转拖慢
+        # 同进程后续测试）；同时清理全局单例，防止跨测试状态残留。
+        _STOP_LOOP.set()
+        reset_rules_engine()
 
     # ── 1. add_rule 幂等（同 rule_id 覆盖）─────────────────
 
@@ -228,9 +242,12 @@ class TestReasoningRules(unittest.TestCase):
     # ── 11. 5s+ 死循环规则被跳过（短超时守护验证）────────────
 
     def test_infinite_loop_rule_skipped(self) -> None:
-        # 创建一个真正死循环的 condition
+        # 创建一个"死循环" condition：超时守护触发后由 tearDown 置位 _STOP_LOOP
+        # 使其尽快退出（不能写成 while True: pass —— 线程无法被强杀，会永久空转）
+        _STOP_LOOP.clear()
+
         def infinite_loop(entity, ctx):
-            while True:
+            while not _STOP_LOOP.is_set():
                 pass
         # timeout=0.3s → 应被守护跳过
         self.engine.add_rule(InferenceRule(

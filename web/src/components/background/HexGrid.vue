@@ -3,15 +3,21 @@
  * HexGrid · 六边形拓扑背景（M2 任务，本期占位）
  * 仅渲染静态六边形 pattern + 几个示例节点
  * 完整节点交互与连线将在 M2 阶段实现
+ *
+ * v1.5.0 T02：接 intensity prop
+ * - 'off'  时整体 opacity=0（保留 DOM 避免重渲染）
+ * - 其他档位维持原 0.18 stroke-opacity 视觉
+ *   注：当前架构仅本组件占位，无视图直接使用，prop 已就绪等待未来 view 接入
  */
 import { computed } from 'vue'
 import { useTheme } from '@/composables/useTheme'
-import type { HexGridProps } from '@/types/theme'
+import type { HexGridProps, BackgroundIntensity } from '@/types/theme'
 
-withDefaults(defineProps<HexGridProps>(), {
+const props = withDefaults(defineProps<HexGridProps & { intensity?: BackgroundIntensity }>(), {
   cols: 12,
   rows: 8,
   interactive: false,
+  intensity: 'mid',
 })
 
 const { isDark: _isDark } = useTheme() // 占位：未来用于节点交互高亮
@@ -20,11 +26,14 @@ void _isDark
 // 使用 CSS 变量（双主题自动适配），不再硬编码颜色
 const stroke = computed(() => 'var(--brand-primary)')
 const glow = computed(() => 'var(--brand-primary-soft)')
+
+/** intensity 派生 → 整体透明度（off = 0，其他档位 1，由内部 stroke-opacity 控实际浓淡） */
+const wrapOpacity = computed(() => (props.intensity === 'off' ? 0 : 1))
 </script>
 
 <template>
   <!-- M2 占位：仅静态六边形 pattern + 4 个示例节点 -->
-  <div class="gm-hex-grid" aria-hidden="true">
+  <div class="gm-hex-grid" aria-hidden="true" :style="{ opacity: wrapOpacity }">
     <svg
       class="gm-hex-grid__bg"
       xmlns="http://www.w3.org/2000/svg"
@@ -69,6 +78,7 @@ const glow = computed(() => 'var(--brand-primary-soft)')
   z-index: var(--z-base);
   pointer-events: none;
   overflow: hidden;
+  transition: opacity var(--dur-base) var(--ease-out-quint);
 }
 
 .gm-hex-grid__bg {

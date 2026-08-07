@@ -34,6 +34,28 @@ from api.schemas.hitl_edit import (
 from api.services.hitl_audit_service import HitlAuditService, process_edit_decision
 from mcp_tools.db.database import get_connection, init_db
 
+import pytest
+
+# QA 隔离修复：生产库（data/gridmind.db）中固定 thread_id 已累积多次运行
+# 残留审计行（如 hitl-edit-pure-1 有 5 行），pytest 直接收集 test_* 函数
+# （asyncio_mode=auto，不经过 main()），len(rows)==1 断言会因历史残留失败。
+# autouse fixture 在每个测试前后清理这些 thread_id，保证测试隔离。
+_TEST_THREAD_IDS = [
+    "hitl-edit-pure-1",
+    "hitl-edit-ec-1",
+    "hitl-edit-reject-1",
+    "hitl-edit-safety-1",
+    "hitl-legacy-1",
+    "hitl-legacy-2",
+]
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_hitl_audit_logs():
+    _cleanup_test_logs(_TEST_THREAD_IDS)
+    yield
+    _cleanup_test_logs(_TEST_THREAD_IDS)
+
 
 class FakeHighRiskTool(BaseTool):
     """模拟高危工具 dispatch_work_order 与 suggest_shutdown。"""
@@ -357,6 +379,10 @@ def main() -> None:
         "hitl-legacy-1",
         "hitl-legacy-2",
     ]
+
+    # QA 隔离修复：前置清理固定 thread_id 的历史审计行（生产库已累积多次
+    # 运行残留 → len(rows)==1 断言失败）。保证每次运行从干净状态开始。
+    _cleanup_test_logs(used_threads)
 
     try:
         asyncio.run(main_async())

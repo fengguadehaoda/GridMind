@@ -1,0 +1,11 @@
+# GridMind 开发/测试依赖（D7）
+# ---------------------------------------------------------------------------
+# 安装：pip install -r requirements-dev.txt
+# 生产部署不装本文件（仅 requirements.txt）。
+# httpx / httpx-sse 已随 requirements.txt 安装（FastAPI TestClient 与异步断言共用）。
+# ---------------------------------------------------------------------------
+-r requirements.txt
+
+# 测试框架
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

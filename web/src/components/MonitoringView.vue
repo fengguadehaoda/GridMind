@@ -1,6 +1,7 @@
 <template>
   <div class="monitoring-view">
-    <TechBackground intensity="low" :show-glow="true" />
+    <!-- v1.5.0 T02：intensity 由 display store 注入（标准 = off / 演示 = high） -->
+    <TechBackground :intensity="bgIntensity" :show-glow="true" />
 
     <div class="page-content">
       <!-- 页面标题 -->
@@ -11,8 +12,8 @@
         </div>
       </div>
 
-      <!-- 顶部统计：4 个 StatHexagon -->
-      <div class="stats-hex-row">
+      <!-- 顶部统计：4 个 StatHexagon（v1.6.0 P1-6：auto-fit 自适应 + 空数据自动隐藏） -->
+      <div v-if="store.devices.length || store.loading" class="stats-hex-row" data-tour="monitor-stats">
         <StatHexagon
           label="设备总数"
           :value="totalCount"
@@ -40,7 +41,7 @@
       </div>
 
       <!-- 刷新控制条 -->
-      <div class="toolbar">
+      <div class="toolbar" data-tour="monitor-toolbar">
         <div class="toolbar-left">
           <span class="refresh-time">
             <el-icon><Timer /></el-icon>
@@ -69,7 +70,7 @@
       </div>
 
       <!-- 设备总览表格 -->
-      <div class="table-card">
+      <div class="table-card" data-tour="monitor-table">
         <el-table
           v-loading="store.loading && !store.devices.length"
           :data="sortedDevices"
@@ -211,12 +212,12 @@
           </div>
 
           <!-- b) 健康评分与异常清单 -->
-          <div class="health-card-wrap">
+          <div class="health-card-wrap" data-tour="monitor-health-card">
             <HealthCard :scores="healthCardScores" />
           </div>
 
           <!-- c) 遥测趋势图 -->
-          <div class="chart-card">
+          <div class="chart-card" data-tour="monitor-telemetry">
             <div class="card-heading chart-heading">
               <span class="chart-title">
                 <el-icon><TrendCharts /></el-icon>
@@ -284,12 +285,15 @@ import type {
 } from '../types'
 import * as api from '../api/monitor'
 import { useMonitorStore } from '../stores/monitorStore'
+import { useDisplay } from '../composables/useDisplay'
 import HealthCard from './HealthCard.vue'
 import TelemetryChart from './TelemetryChart.vue'
 import TechBackground from './background/TechBackground.vue'
 import StatHexagon from './controls/StatHexagon.vue'
 
 const store = useMonitorStore()
+// v1.5.0 T02：解构出 bgIntensity（storeToRefs 保留响应性）
+const { bgIntensity } = useDisplay()
 
 /* ── 顶部统计 ─────────────────────── */
 const totalCount = computed(() => store.devices.length)
@@ -477,17 +481,18 @@ onUnmounted(() => {
   transition: var(--theme-transition);
 }
 
-/* ── StatHexagon 栅格 ─────────────── */
+/* ── StatHexagon 栅格（v1.6.0 P1-6：auto-fit + minmax 替换固定列模板）── */
 .stats-hex-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: var(--space-4);
   margin-bottom: var(--space-5);
 }
 
-@media (max-width: 1024px) {
+/* 紧凑断点（<1280）：下限收窄，自动换行 */
+@media (max-width: 1279.98px) {
   .stats-hex-row {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   }
 }
 

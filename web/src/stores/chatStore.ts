@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { ChatMessage, SseEvent, HealthScoreResult, KnowledgeAnswer, DemoShortcut } from '../types'
 import * as api from '../api/chat'
+// F1 修复：chatStore 与 reasoning store 打通（无循环依赖：reasoning 不反向 import chatStore）
+import { useReasoningStore } from './reasoning'
 
 let _msgCounter = 0
 function nextId(): string {
@@ -12,6 +14,18 @@ function nextId(): string {
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+
+/**
+ * 发送冷却（v1.5.0 P0-4 主理人决策 #4）：
+ *   wizard 第 2 步会自动触发 4 次 send（4 个 DemoShortcuts 任选）
+ *   为防止后端 QPS 限流（架构 §1.3 + §8 待明确事项 #4 决策结果），
+ *   chatStore 在 sendMessage / sendMessageBlocking 各加 5s cooldown。
+ *
+ *   - 5 秒内重复 send → 静默忽略
+ *   - cooldown 计时基于"上一次**成功入队**"的时间戳
+ *   - 该限制仅作用于 send 类入口，不影响 HITL approve / reject（异步审批）
+ */
+const SEND_COOLDOWN_MS = 5_000
 
 /** 流式显示模拟参数（让 LLM 回答看起来像真实生成，避免秒出） */
 const THINKING_DELAY_MS = 700           // 普通场景：思考延迟（仅显示跳动点）
@@ -38,6 +52,9 @@ export const useChatStore = defineStore('chat', () => {
   const pendingThreadId = ref<string | null>(null)
   const hitlBusy = ref(false)
   const hitlSafetyReject = ref<string | null>(null)
+
+  // v1.5.0 P0-4：send cooldown 时间戳（ref 化为 reactive state；不持久化）
+  const lastSendAt = ref(0)
 
   // SSE controller
   let sseController: AbortController | null = null
@@ -66,11 +83,25 @@ export const useChatStore = defineStore('chat', () => {
     return results
   })
 
+  // v1.5.0 P0-4：cooldown reactive getters（供 UI 如 wizard Step2 显示）
+  const isInCooldown = computed<boolean>(() => {
+    return Date.now() - lastSendAt.value < SEND_COOLDOWN_MS
+  })
+  const cooldownRemainingSec = computed<number>(() => {
+    const elapsed = Date.now() - lastSendAt.value
+    const left = SEND_COOLDOWN_MS - elapsed
+    if (left <= 0) return 0
+    return Math.ceil(left / 1000)
+  })
+
   // ── Actions ───────────────────────────────
 
   /** 发送消息（SSE 流式） */
   async function sendMessage(text: string) {
     if (!text.trim() || loading.value) return
+    // v1.5.0 P0-4：5 秒 cooldown 防 wizard 自动 4 次 send 触发限流
+    if (Date.now() - lastSendAt.value < SEND_COOLDOWN_MS) return
+    lastSendAt.value = Date.now()
 
     const userMsg: ChatMessage = {
       id: nextId(),
@@ -95,6 +126,9 @@ export const useChatStore = defineStore('chat', () => {
 
     // 本地缓冲：先收完 SSE，再模拟流式展示（让 UX 更接近真实 LLM）
     let fullResponse = ''
+    // Bug3 修复：标记本次流是否已失败（onError 已写入 ❌ 错误内容）。
+    // onDone 兜底回调不得再跑模拟流式输出覆盖错误内容，防止"先报错又被覆盖"。
+    let streamFailed = false
     let interruptInfo: {
       required: boolean
       threadId?: string | null
@@ -111,6 +145,33 @@ export const useChatStore = defineStore('chat', () => {
           // 收 token 到本地缓冲，不直接更新 reactiveMsg.content
           fullResponse += event.content
         } else if (event.type === 'done') {
+          // F1 修复（QA F1 P1）：打通 chatStore.threadId 与 reasoning.sessionId
+          // 后端 /chat/stream 的 done 事件携带真实 thread_id（main.py chat_stream）
+          // → ① 同步 threadId（此前从未被更新，恒为初始 thread_xxx）
+          // → ② 启动 reasoning 会话级状态机，触发 ChatView watch 挂载
+          //      /sessions/{id}/events SSE（step_* / reasoning_* / hitl_* 事件）
+          // 同 thread 重复 done（多轮对话）不重复 start，保留已累积 steps。
+          if (event.thread_id) {
+            threadId.value = event.thread_id
+            const reasoningStore = useReasoningStore()
+            if (reasoningStore.sessionId !== event.thread_id) {
+              reasoningStore.start(event.thread_id)
+            }
+          }
+          // Bug2 修复：演示模式剧本外响应 → 清掉残留审批态（防上一轮
+          // pending_tool_plan / interrupt 状态卡死），并标记消息供样式展示
+          if (event.is_demo_out_of_scope) {
+            interruptRequired.value = false
+            pendingThreadId.value = null
+            interruptNode.value = null
+            interruptMsg.value = null
+            interruptArgs.value = {}
+            interruptOriginalArgs.value = {}
+            reactiveMsg.metadata = {
+              ...(reactiveMsg.metadata || {}),
+              is_demo_out_of_scope: true,
+            }
+          }
           // 暂存中断信息，等流式展示结束后再触发
           interruptInfo = {
             required: !!event.interrupt_required,
@@ -121,33 +182,57 @@ export const useChatStore = defineStore('chat', () => {
         }
       },
       (err: string) => {
+        streamFailed = true
         reactiveMsg.content = `❌ ${err}`
         reactiveMsg.loading = false
         streaming.value = false
         loading.value = false
       },
       async () => {
+        // Bug3 修复：流已失败（onError 已触发）时直接收尾，
+        // 不再跑模拟流式输出覆盖 ❌ 错误内容（防重复/覆盖）
+        if (streamFailed) {
+          streaming.value = false
+          loading.value = false
+          return
+        }
         // ── SSE 完成 → 模拟流式展示 ─────────────────────
         const isHighRisk = !!interruptInfo?.required
 
         if (isHighRisk) {
-          // ── 高危场景：拉长节奏，分两段让用户看清分析过程 ──
+          // ── 高危场景：拉长节奏，分段让用户看清分析过程 ──
           // 阶段 0：先让 ThinkingIndicator 跳动 1.2s（"分析中"语义）
           await sleep(HIGH_RISK_THINKING_DELAY_MS - 300) // 留 300ms 给阶段 1 起步
           reactiveMsg.loading = false
 
-          // 阶段 1：风险分析文字流式出现
+          // 阶段 1：先完整呈现本轮回答正文。
+          //   融合层 HITL（诊断结论需人工复核）场景下，fullResponse 是诊断结论
+          //   + 可解释性推理链——此前这里被警告文案整段覆盖，用户会丢失诊断内容。
+          //   工具级 HITL 时图在 interrupt() 处挂起、本轮没有回答正文
+          //   （fullResponse 为空），自动跳过本阶段，保持原有观感。
+          let prefix = ''
+          if (fullResponse) {
+            for (let pos = 0; pos < fullResponse.length; pos += CHUNK_SIZE) {
+              reactiveMsg.content = fullResponse.slice(0, Math.min(pos + CHUNK_SIZE, fullResponse.length))
+              await sleep(CHUNK_DELAY_MS)
+            }
+            reactiveMsg.content = fullResponse
+            prefix = `${fullResponse}\n\n`
+            await sleep(300)
+          }
+
+          // 阶段 2：风险分析文字流式出现
           const warnText = '⚠️ 检测到高危操作请求，正在评估风险并匹配安全规范…'
           for (let pos = 0; pos < warnText.length; pos += CHUNK_SIZE) {
-            reactiveMsg.content = warnText.slice(0, Math.min(pos + CHUNK_SIZE, warnText.length))
+            reactiveMsg.content = prefix + warnText.slice(0, Math.min(pos + CHUNK_SIZE, warnText.length))
             await sleep(CHUNK_DELAY_MS)
           }
           await sleep(300)
 
-          // 阶段 2：补充完整警告说明，缓冲后弹出 HITL 弹窗
+          // 阶段 3：补充完整警告说明，缓冲后弹出 HITL 弹窗
           const detail = `\n\n经安全 Agent 评估，本次操作涉及：\n• 设备：${interruptInfo?.node || '目标设备'}\n• 风险等级：高\n• 建议：需值班负责人 / 调度员人工确认后方可执行`
           for (let pos = 0; pos < detail.length; pos += CHUNK_SIZE) {
-            reactiveMsg.content = warnText + detail.slice(0, Math.min(pos + CHUNK_SIZE, detail.length))
+            reactiveMsg.content = prefix + warnText + detail.slice(0, Math.min(pos + CHUNK_SIZE, detail.length))
             await sleep(CHUNK_DELAY_MS)
           }
           await sleep(HIGH_RISK_WARN_DELAY_MS)
@@ -191,6 +276,9 @@ export const useChatStore = defineStore('chat', () => {
   /** 普通模式发送（非流式，用于 HITL 后续） */
   async function sendMessageBlocking(text: string) {
     if (!text.trim() || loading.value) return
+    // v1.5.0 P0-4：5 秒 cooldown 防 wizard 自动 4 次 send 触发限流
+    if (Date.now() - lastSendAt.value < SEND_COOLDOWN_MS) return
+    lastSendAt.value = Date.now()
 
     const userMsg: ChatMessage = {
       id: nextId(),
@@ -205,11 +293,28 @@ export const useChatStore = defineStore('chat', () => {
       const resp = await api.sendMessage(text, threadId.value)
       threadId.value = resp.thread_id
 
+      // Bug2 修复：演示模式剧本外响应 → 清掉残留审批态（防状态卡死）
+      if (resp.is_demo_out_of_scope) {
+        interruptRequired.value = false
+        pendingThreadId.value = null
+        interruptNode.value = null
+        interruptMsg.value = null
+        interruptArgs.value = {}
+        interruptOriginalArgs.value = {}
+      }
+
       const assistantMsg: ChatMessage = {
         id: nextId(),
         role: 'assistant',
         content: resp.response,
         timestamp: new Date().toISOString(),
+        metadata: resp.is_demo_out_of_scope
+          ? {
+              agent_name: resp.agent_name || null,
+              thread_id: resp.thread_id,
+              is_demo_out_of_scope: true,
+            }
+          : undefined,
       }
 
       if (resp.interrupt_required) {
@@ -420,6 +525,8 @@ export const useChatStore = defineStore('chat', () => {
     interruptOriginalArgs.value = {}
     hitlBusy.value = false
     hitlSafetyReject.value = null
+    // v1.5.0 P0-4：reset 时一并清掉 send cooldown
+    lastSendAt.value = 0
   }
 
   /** 添加上下文数据（健康评分/知识答案等）到最近一条 assistant 消息 */
@@ -448,7 +555,7 @@ export const useChatStore = defineStore('chat', () => {
     {
       label: '📖 知识查询',
       icon: 'Notebook',
-      message: '变压器油温异常有哪些原因和处理方法？',
+      message: '变压器过载如何处置',
       description: 'RAG 混合检索 → 展示向量+图谱引用路径',
     },
     {
@@ -483,5 +590,10 @@ export const useChatStore = defineStore('chat', () => {
     decideHitl,
     resetChat,
     attachContext,
+    // v1.5.0 P0-4：暴露 cooldown reactive 状态（Step2 UI 可读）
+    lastSendAt,
+    isInCooldown,
+    cooldownRemainingSec,
+    SEND_COOLDOWN_MS,
   }
 })

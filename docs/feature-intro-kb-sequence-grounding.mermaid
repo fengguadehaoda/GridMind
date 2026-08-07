@@ -1,0 +1,61 @@
+%% GridMind 功能介绍知识库化 · 时序图三：对话 grounding（PRD P0-5）
+%% 来源：docs/feature-intro-kb-architecture-addendum-p05-2026-08-05.md §5
+%% 配套：feature-intro-kb-sequence-ingest.mermaid（入仓）
+%%       feature-intro-kb-sequence-render.mermaid（前端读取渲染）
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant FE as ChatView / chatStore
+    participant API as api/main.py<br/>POST /chat (9900)
+    participant G as GraphBuilder<br/>LangGraph
+    participant KA as knowledge_agent
+    participant MCP as mcp_tools/server.py<br/>(9901 · 独立进程)
+    participant KT as knowledge_tools
+    participant RE as RagEngine
+    participant IN as feature_intro.intent<br/>(纯函数)
+    participant VS as VectorStore<br/>get_vector_store()
+    participant DB as SQLite<br/>knowledge_chunks + kb_meta
+    participant CH as Chroma<br/>knowledge_base
+
+    U->>FE: 「请给我介绍一下 GridMind 的 5 个核心视图」
+    FE->>API: POST /chat {message, thread_id}
+    API->>G: run(thread_id, message)
+    G->>KA: supervisor 路由至 knowledge_agent
+    KA->>MCP: tool call: search_feature_intro / query_knowledge_base
+    MCP->>KT: 分发
+    KT->>RE: answer(query)
+
+    RE->>IN: detect(query)
+    Note right of IN: R1 精确匹配 starterMessage → score=1.0<br/>R5 未命中设备号/规程号/故障词
+    IN-->>RE: Intent(hit=True, tags=('kind:view','kind:overview'))
+
+    alt hit = True （功能介绍优先通道）
+        RE->>VS: ensure_fresh()
+        VS->>DB: SELECT value FROM kb_meta WHERE key='kb_revision'
+        DB-->>VS: revision
+        alt revision 变化（运营刚热更新过）
+            VS->>DB: 重载 feature-intro 命名空间 _chunks
+            Note right of VS: MCP 进程只读：force_reindex=False<br/>不重写 Chroma（增补件 §3.3 单写者原则）
+        end
+        RE->>VS: search_by_tag(tags, query, top_k=5)
+        VS->>VS: 内存按 |tag| 过滤<br/>（Chroma where 不支持子串匹配）
+        VS->>CH: query(embeddings) 在子集内排序
+        CH-->>VS: 命中片段 + metadata
+        VS-->>RE: chunks[doc_id,title,section,kind,tags,score]
+        opt 命中不足 top_k
+            RE->>VS: search(query) 去重补位
+        end
+        Note right of RE: 跳过图谱扩展（功能介绍无设备实体）<br/>confidence = max(0.75, base)
+    else hit = False
+        RE->>RE: 原有通用链路 retrieve()（零改动、零回归）
+    end
+
+    RE->>RE: _build_context() 功能介绍片段置顶
+    RE->>RE: _generate() + 强制引用 system prompt
+    RE-->>KT: KnowledgeAnswer{answer,<br/>citations:["《GridMind 功能介绍》§2.1 对话视图 chat"],<br/>chunk_refs:[ChunkRef...], confidence}
+    KT-->>MCP: dict
+    MCP-->>KA: tool result
+    KA-->>G: assistant message
+    G-->>API: state
+    API-->>FE: ChatResponse
+    FE-->>U: 答案 + 可溯源引用（与文档一致）

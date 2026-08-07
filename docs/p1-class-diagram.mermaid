@@ -1,0 +1,131 @@
+classDiagram
+    direction LR
+
+    %% ─── P1-1 命令面板 ───
+    class CommandItem {
+        +string id
+        +CommandGroup group
+        +CommandScope scope
+        +string title
+        +string subtitle?
+        +string[] shortcut?
+        +string icon?
+        +string[] keywords
+        +() => void|Promise~void~ action
+        +boolean disabled?
+    }
+    class useCommands {
+        +CommandItem[] commands
+        +getByGroup(group: CommandGroup) CommandItem[]
+        +register(item: CommandItem) void
+        +execute(id: string) Promise~void~
+    }
+    class fuzzyUtils {
+        +normalizeQuery(s: string) string
+        +matchScore(texts: string[], query: string) number
+        +filter(items: CommandItem[], query: string) CommandItem[]
+    }
+    class hotkeyRegistry {
+        +register(binding: HotkeyBinding) () => void
+        +init() void
+    }
+    CommandPalette ..> useCommands : 渲染/执行
+    CommandPalette ..> fuzzyUtils : 搜索
+    CommandPalette ..> hotkeyRegistry : ⌘K/ESC/↑↓/Enter
+    useCommands --> CommandItem : 注册
+
+    %% ─── P1-2 帮助中心 ───
+    class HelpArticleMeta {
+        +string id
+        +string title
+        +string path
+        +string summary
+        +string[] keywords
+        +number order
+    }
+    class HelpStore {
+        +HelpArticleMeta[] manifest
+        +Record~string, HelpArticle~ articles
+        +string currentId?
+        +string query
+        +loadManifest() Promise~void~
+        +loadArticle(id: string) Promise~void~
+        +search(q: string) SearchHit[]
+    }
+    class markdownUtils {
+        +render(src: string) string
+        +extractHeadings(src: string) Heading[]
+        +extractSearchText(src: string) string
+    }
+    HelpCenterView ..> HelpStore : 展示/搜索
+    HelpStore ..> markdownUtils : 渲染/建索引
+    ShortcutsOverlay ..> hotkeyRegistry : ?/ESC
+
+    %% ─── P1-3 Session 可观测 ───
+    class SessionStatsStore {
+        +SessionViewStatus viewStatus
+        +number elapsedMs
+        +number totalTokens?
+        +Record~string, number~ tokensByStep
+        +SessionCheckpointView[] checkpoints?
+        +startTicking() void
+        +onSseToken(content: string) void
+        +fetchCheckpoints(sessionId: string) Promise~void~
+    }
+    class SessionBadge {
+        +computed viewStatus
+        +onClick() void
+    }
+    class SessionDetailDrawer {
+        +steps timeline
+        +token section
+        +rollback buttons
+        +confirmRewind(step: SessionCheckpointView) Promise~void~
+    }
+    SessionBadge ..> SessionStatsStore : 读状态
+    SessionDetailDrawer ..> SessionStatsStore : 时间线/token/checkpoints
+    SessionDetailDrawer ..> ReasoningStore : rewind/rerunFromStep
+
+    %% ─── P1-4 KG 灰度 ───
+    class GrayscaleGraphStore {
+        +GrayscaleGraph graph
+        +GrayscalePlan[] plans
+        +GrayscaleMode mode
+        +string[] selectedNodeIds
+        +fetchGraph() Promise~void~
+        +toggleNode(id: string) void
+        +buildPlans() void
+        +applyPlan(plan: GrayscalePlan) Promise~void~
+    }
+    class TopologyGraph {
+        +init(container: HTMLElement) void
+        +setData(graph: GrayscaleGraph) void
+        +dispose() void
+    }
+    class PlanComparePanel {
+        +GrayscalePlan[] plans
+        +selectPlan(id: string) void
+        +applyPlan(plan: GrayscalePlan) void
+    }
+    class GrayscaleModeBar {
+        +GrayscaleMode mode
+        +onModeChange(mode: GrayscaleMode) void
+    }
+    GrayscaleGraphStore --> TopologyGraph : 数据
+    GrayscaleGraphStore --> PlanComparePanel : 方案
+    GrayscaleGraphStore --> GrayscaleModeBar : 模式
+    GrayscaleGraphStore ..> MetricsStore : applyPlan→setRatio
+
+    %% ─── 共享 ───
+    class useViewport {
+        +ViewportTier tier
+        +boolean isLarge
+        +boolean isCompact
+    }
+    class echartsTheme {
+        +readToken(name: string) string
+        +watchThemeChange(cb: () => void) () => void
+        +apply(chart: ECharts) void
+    }
+    TopologyGraph ..> echartsTheme : 主题色
+    AppView ..> useViewport : 断点
