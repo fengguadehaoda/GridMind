@@ -2,7 +2,8 @@
 
 > **Multi-Agent 电网 AI 系统 v1.8.0（最终交付）** — 基于 **FastAPI + LangGraph** 构建，通过 **MCP 协议** 标准化工具调用、**Neo4j + NetworkX 双 backend 知识图谱**、**可解释性 AI 三层架构**、**HITL Edit & Continue**、**多用户 + RBAC 五角色 + 真实登录/注册**，覆盖设备监控 / 异常检测 / 安规核查 / 知识库问答 / 图谱问答 / 会话管理六大核心能力。
 
-![GridMind](gridmind-current.png)
+![GridMind](GridMind-main.png)
+![GridMind](gridmind-detail-dark-after.png)
 
 ---
 
