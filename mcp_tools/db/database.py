@@ -229,6 +229,79 @@ def _ensure_kb_meta_table(conn: sqlite3.Connection) -> None:
                 raise
 
 
+# ═══════════════════════════════════════════════════════════════
+# V1.8.0 认证（T01）：users / refresh_tokens / auth_audit_log 三表幂等迁移
+# ═══════════════════════════════════════════════════════════════
+# 架构 auth-architecture §3.1 + PRD §4.1-4.3：
+#   - users：真实账号（登录标识 username，小写唯一；bcrypt 密码 hash）
+#   - refresh_tokens：多设备并发会话（DB 只存 SHA-256 hash；每次刷新轮换，
+#     replaced_by 成链可审计）
+#   - auth_audit_log：认证事件审计（login_success/login_failed/account_locked/
+#     logout/refresh/user_created/user_disabled/role_changed/password_changed）
+# 全部 CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS（自身幂等），
+# 与 init_db executescript 中的 DDL 完全一致；重复调用零副作用。
+
+
+def _ensure_auth_tables(conn: sqlite3.Connection) -> None:
+    """创建/补齐认证三表 + 索引（V1.8.0 幂等迁移）。
+
+    与新库 executescript 一步到位的 DDL 保持一致；存量库升级时由本函数
+    兜底（CREATE IF NOT EXISTS 幂等），重复 ``init_db()`` 零副作用。
+    """
+    conn.executescript(
+        """
+        -- users：真实账号（登录标识 username，小写唯一）
+        CREATE TABLE IF NOT EXISTS users (
+            id                    TEXT PRIMARY KEY,             -- UUID（写入 JWT sub/user_id）
+            username              TEXT NOT NULL UNIQUE,         -- 登录名（小写唯一）
+            email                 TEXT,                         -- 可选（未启用邮箱登录）
+            password_hash         TEXT NOT NULL,                -- bcrypt hash（72 字节截断）
+            role                  TEXT NOT NULL DEFAULT 'dispatcher',  -- 5 角色之一（对齐 ROLE_VALUES）
+            disabled              INTEGER NOT NULL DEFAULT 0,   -- 1=禁用（login/refresh/me 拒绝）
+            must_change_password  INTEGER NOT NULL DEFAULT 0,   -- 1=首次登录强制改密
+            password_changed_at   TEXT,                         -- UTC ISO
+            password_history      TEXT NOT NULL DEFAULT '[]',   -- JSON：最近 N 次 bcrypt hash（P2 启用）
+            failed_attempts       INTEGER NOT NULL DEFAULT 0,   -- 连续失败计数（成功/锁定期满清零）
+            locked_until          TEXT,                         -- 锁定截止 UTC ISO；NULL=未锁定
+            last_login_at         TEXT,                         -- 最近成功登录（UTC ISO）
+            created_at            TEXT NOT NULL,
+            updated_at            TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+        CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
+        -- refresh_tokens：多设备并发会话（每次刷新轮换，replaced_by 成链）
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       TEXT NOT NULL REFERENCES users(id),
+            token_hash    TEXT NOT NULL UNIQUE,      -- SHA-256(refresh_token)，不存明文
+            expires_at    TEXT NOT NULL,             -- UTC ISO
+            created_at    TEXT NOT NULL,
+            revoked_at    TEXT,                      -- 退出/轮换/改密后置值
+            replaced_by   INTEGER,                   -- 轮换链：新 refresh_tokens.id（NULL=未轮换）
+            user_agent    TEXT,
+            ip_address    TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id);
+        CREATE INDEX IF NOT EXISTS idx_refresh_hash ON refresh_tokens(token_hash);
+
+        -- auth_audit_log：认证事件审计（与 hitl_audit_log 共存）
+        CREATE TABLE IF NOT EXISTS auth_audit_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type  TEXT NOT NULL,   -- login_success|login_failed|account_locked|logout|refresh|user_created|user_disabled|role_changed|password_changed
+            user_id     TEXT,
+            username    TEXT,
+            ip_address  TEXT,
+            user_agent  TEXT,
+            detail      TEXT,            -- 补充（不存密码/明文 token）
+            created_at  TEXT NOT NULL    -- UTC ISO
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_audit_user ON auth_audit_log(user_id);
+        CREATE INDEX IF NOT EXISTS idx_auth_audit_time ON auth_audit_log(created_at);
+        """
+    )
+
+
 def init_db() -> None:
     """初始化数据库表结构。"""
     conn = get_connection()
@@ -425,6 +498,54 @@ def init_db() -> None:
             -- 表已存在、跳过 CREATE TABLE）会直接引用不存在的 archived 列
             -- 导致 `sqlite3.OperationalError: no such column: archived`
             -- 启动崩溃（QA Round 1 P0）。
+
+            -- V1.8.0 认证（T01）：users / refresh_tokens / auth_audit_log 三表
+            -- （新库一步到位；存量库由末尾 `_ensure_auth_tables(conn)` 兜底）
+            CREATE TABLE IF NOT EXISTS users (
+                id                    TEXT PRIMARY KEY,
+                username              TEXT NOT NULL UNIQUE,
+                email                 TEXT,
+                password_hash         TEXT NOT NULL,
+                role                  TEXT NOT NULL DEFAULT 'dispatcher',
+                disabled              INTEGER NOT NULL DEFAULT 0,
+                must_change_password  INTEGER NOT NULL DEFAULT 0,
+                password_changed_at   TEXT,
+                password_history      TEXT NOT NULL DEFAULT '[]',
+                failed_attempts       INTEGER NOT NULL DEFAULT 0,
+                locked_until          TEXT,
+                last_login_at         TEXT,
+                created_at            TEXT NOT NULL,
+                updated_at            TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+            CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
+            CREATE TABLE IF NOT EXISTS refresh_tokens (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       TEXT NOT NULL REFERENCES users(id),
+                token_hash    TEXT NOT NULL UNIQUE,
+                expires_at    TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                revoked_at    TEXT,
+                replaced_by   INTEGER,
+                user_agent    TEXT,
+                ip_address    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_refresh_user ON refresh_tokens(user_id);
+            CREATE INDEX IF NOT EXISTS idx_refresh_hash ON refresh_tokens(token_hash);
+
+            CREATE TABLE IF NOT EXISTS auth_audit_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type  TEXT NOT NULL,
+                user_id     TEXT,
+                username    TEXT,
+                ip_address  TEXT,
+                user_agent  TEXT,
+                detail      TEXT,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_auth_audit_user ON auth_audit_log(user_id);
+            CREATE INDEX IF NOT EXISTS idx_auth_audit_time ON auth_audit_log(created_at);
         """)
         conn.commit()
         logger.info("Database initialized: {}", settings.database_path)
@@ -439,6 +560,9 @@ def init_db() -> None:
         _ensure_kb_meta_table(conn)
         # M-5：补齐 threads 表 archived/deleted_at 列 + 侧栏索引（存量库升级）
         _ensure_threads_columns(conn)
+        # V1.8.0 认证（T01）：补齐 users / refresh_tokens / auth_audit_log 三表
+        # + 索引（CREATE IF NOT EXISTS 幂等；存量库升级 / 重复 init_db 零副作用）
+        _ensure_auth_tables(conn)
         conn.commit()
     finally:
         conn.close()

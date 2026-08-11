@@ -59,6 +59,9 @@ tiktoken>=0.7.0
 pyjwt>=2.8.0
 # IP 维度 rate limit（admin 端点防暴力破解）
 slowapi>=0.1.9
+# --- V1.8.0 Auth（T01）：密码 hash（bcrypt 5.0.0 已装，显式声明防生产丢包）---
+# 唯一新增后端依赖；成本因子 12 + 72 字节截断（见 api/services/user_service.py）
+bcrypt>=5.0.0
 
 # --- Dev ---
 # D7：测试依赖已移至 requirements-dev.txt（pytest / pytest-asyncio 等），

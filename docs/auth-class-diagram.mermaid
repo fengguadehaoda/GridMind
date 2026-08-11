@@ -1,0 +1,105 @@
+classDiagram
+    class User {
+        +str id
+        +str username
+        +str email
+        +str password_hash
+        +str role
+        +int disabled
+        +int must_change_password
+        +str password_changed_at
+        +str password_history
+        +int failed_attempts
+        +str locked_until
+        +str last_login_at
+        +str created_at
+        +str updated_at
+    }
+    class RefreshToken {
+        +int id
+        +str user_id
+        +str token_hash
+        +str expires_at
+        +str created_at
+        +str revoked_at
+        +int replaced_by
+        +str user_agent
+        +str ip_address
+    }
+    class AuthAuditLog {
+        +int id
+        +str event_type
+        +str user_id
+        +str username
+        +str ip_address
+        +str user_agent
+        +str detail
+        +str created_at
+    }
+    class AuthService {
+        +login(username, password, ip, ua) dict
+        +refresh(refresh_token, ip, ua) dict
+        +logout(refresh_token) None
+        +get_me(user_id) dict
+        +change_password(user_id, old, new, ip, ua) None
+        +dev_login(role, ip, ua) dict
+        -_build_access_token(user, ttl) str
+        -_generate_refresh_token(user, ip, ua) str
+        -_revoke_refresh(token_hash, replaced_by) None
+    }
+    class UserService {
+        +ensure_initial_admin() None
+        +list_users(role, disabled, q, page, page_size) dict
+        +get_by_username(username) dict
+        +get_user(user_id) dict
+        +create_user(username, password, role, email, actor) dict
+        +update_user(user_id, role, disabled, password, actor) dict
+        -_validate_password(password) None
+        -_hash_password(password) str
+        -_verify_password(password, hash) bool
+        -_guard_last_admin(user_id, new_role, disabled) None
+    }
+    class AuthAuditService {
+        +record(event_type, user_id, username, ip, ua, detail) None
+    }
+    class AuthRouter {
+        +POST /auth/login
+        +POST /auth/refresh
+        +POST /auth/logout
+        +GET /auth/me
+        +POST /auth/change-password
+        +POST /auth/dev-login
+    }
+    class UsersRouter {
+        +GET /users
+        +POST /users
+        +PATCH /users/{id}
+    }
+    class authStore {
+        +accessToken string
+        +user AuthUser
+        +status AuthStatus
+        +login(username, password) Promise
+        +refresh() Promise
+        +logout() Promise
+        +fetchMe() Promise
+        +hydrate() Promise
+        +clear() void
+    }
+    class httpClient {
+        +instance axios
+        +requestInterceptor() void
+        +responseInterceptor401() void
+        +refreshPromise Promise~string~
+    }
+
+    User "1" --> "*" RefreshToken : has
+    User "1" --> "*" AuthAuditLog : audited
+    AuthService --> User : reads/verifies
+    AuthService --> UserService : create/update/delegate
+    AuthService --> AuthAuditService : writes
+    UserService --> AuthAuditService : writes
+    AuthRouter --> AuthService : delegates
+    UsersRouter --> UserService : delegates
+    authStore --> httpClient : via api/auth.ts
+    httpClient --> authStore : lazy refresh (function-level import)

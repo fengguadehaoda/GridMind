@@ -108,6 +108,26 @@ class Settings(BaseSettings):
     # admin 端点 IP 维度限流（次/分钟），slowapi 用
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "60"))
 
+    # ── V1.8.0 认证（T01）：JWT TTL / 初始管理员 / 锁定与密码策略 ──
+    # access token 有效期（秒，默认 900s=15min）—— 前端 access 仅存内存，
+    # 到期后由 401 拦截器用 refresh 自动续期（架构 §3.3 + 主理人拍板 #7）。
+    jwt_access_ttl_seconds: int = int(os.getenv("JWT_ACCESS_TTL_SECONDS", "900"))
+    # refresh token 有效期（秒，默认 604800s=7d）；DB 只存 SHA-256 hash，
+    # 每次刷新轮换（旧行 revoked_at + replaced_by 成链）。
+    jwt_refresh_ttl_seconds: int = int(os.getenv("JWT_REFRESH_TTL_SECONDS", "604800"))
+    # 初始管理员密码（生产必配；dev 缺省用占位密码并告警）。
+    # 生产 fail-closed：APP_ENV=production 且 users 表无 admin 且本值未配 → 启动拒绝。
+    admin_initial_password: str = os.getenv("ADMIN_INITIAL_PASSWORD", "")
+    # /auth/login 每 IP 限流（次/分钟），slowapi 用（per-IP 第二层防线）
+    login_rate_limit_per_minute: int = int(os.getenv("LOGIN_RATE_LIMIT_PER_MINUTE", "10"))
+    # per-account 锁定：连续失败 ≥ threshold 次 → 锁定 lock_minutes 分钟
+    account_lock_threshold: int = int(os.getenv("ACCOUNT_LOCKOUT_THRESHOLD", "5"))
+    account_lock_minutes: int = int(os.getenv("ACCOUNT_LOCKOUT_MINUTES", "15"))
+    # 密码策略（主理人拍板 #2）：最短长度 ≥ 8 位 + 至少一个数字 + 至少一个字母
+    password_min_length: int = int(os.getenv("PASSWORD_MIN_LENGTH", "8"))
+    # 密码有效期（天，默认 90 天过期提醒；/auth/me 返回 password_expiring）
+    password_expiry_days: int = int(os.getenv("PASSWORD_EXPIRY_DAYS", "90"))
+
     # ── B5：生产环境安全开关 ──────────────────────────
     # APP_ENV=production（或 PRODUCTION=1）时启用生产安全策略：
     # - JWT_SECRET / ADMIN_TOKEN 仍为公开默认值 → 启动拒绝（见模块底部门禁）

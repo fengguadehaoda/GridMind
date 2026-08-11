@@ -186,19 +186,23 @@ export const useChatStore = defineStore('chat', () => {
             if (reasoningStore.sessionId !== event.thread_id) {
               reasoningStore.start(event.thread_id)
             }
-            // 遗留 A4（P2 增强）：M-5 懒登记新会话实时上侧栏。
-            // 新会话首轮发送后后端才在 threads 表登记真实 thread_id，
-            // 本地将其 upsert 进 sessions 列表，无需等下次 fetchSessions；
-            // 已存在（多轮对话/已归档）时 _upsertSession 幂等无副作用。
+            // A4 修复（b）：仅当后端 done 事件携带 model_id（= 该 thread 已
+            // 真实懒登记）才本地 upsert 侧栏，保住「真消息实时上侧栏」体验。
+            // 占位 thread_id（Date.now() 生成、未真登记）/ 异常回退的 done
+            // （model_id 缺失）→ **不主动插入** sessions，等 fetchSessions
+            // 自然带回（由后端 threads 表决定，避免前端臆测产生空会话项）。
             if (!sessions.value.some((s) => s.thread_id === event.thread_id)) {
-              _upsertSession({
-                thread_id: event.thread_id,
-                title: text.trim().slice(0, 30) || '新会话',
-                model_id: null,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-                archived: 0,
-              })
+              const registeredModelId = event.model_id
+              if (registeredModelId) {
+                _upsertSession({
+                  thread_id: event.thread_id,
+                  title: text.trim().slice(0, 30) || '新会话',
+                  model_id: registeredModelId,
+                  created_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                  archived: 0,
+                })
+              }
             }
           }
           // Bug2 修复：演示模式剧本外响应 → 清掉残留审批态（防上一轮
@@ -688,6 +692,10 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 把会话插入正确列表（按 updated_at 倒序；archived=2 仅移除） */
   function _upsertSession(summary: SessionSummary): void {
+    // A4 修复（b）防御分支：title 为空 且 model_id 为空 的脏摘要（懒登记
+    // 占位行 / 异常回退）不插入任何列表——等待 fetchSessions 由后端
+    // threads 表自然带回。不影响 rename/archive/restore（其 title 恒非空）。
+    if (!summary.title && !summary.model_id) return
     _removeFromLists(summary.thread_id)
     if (summary.archived === 1) {
       archivedSessions.value = [...archivedSessions.value, summary].sort((a, b) =>

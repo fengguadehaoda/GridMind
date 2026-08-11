@@ -1,0 +1,130 @@
+%% GridMind 真实登录 / 切换用户 · 4 个关键时序图（与 auth-architecture-2026-08-11.md §四 一致）
+
+%% ── 4.1 登录流程 ─────────────────────────────────────────────
+sequenceDiagram
+    participant U as 用户
+    participant LV as LoginView
+    participant AS as authStore
+    participant API as FastAPI /auth/login
+    participant AUTH as AuthService
+    participant DB as users / refresh_tokens 表
+    participant AUDIT as auth_audit_log
+
+    U->>LV: 输入用户名+密码，回车
+    LV->>AS: login(username, password)
+    AS->>API: POST /auth/login（axios）
+    Note over API: slowapi @limiter 10/min/IP → 超限 429
+    API->>AUTH: login(username, password, ip, ua)
+    AUTH->>DB: SELECT user by username
+    alt 用户不存在
+        AUTH->>AUTH: 执行 dummy bcrypt checkpw（时序均衡，防枚举）
+        AUTH-->>API: 401 用户名或密码错误
+    else 已锁定（locked_until > now）
+        AUTH->>AUDIT: account_locked
+        AUTH-->>API: 423 尝试次数过多，账号已锁定（Retry-After）
+    else 密码错误
+        AUTH->>DB: failed_attempts++；≥5 → locked_until=now+15min
+        AUTH->>AUDIT: login_failed / account_locked
+        AUTH-->>API: 401 用户名或密码错误（统一文案）
+    else 密码正确
+        AUTH->>DB: failed_attempts=0；last_login_at=now
+        alt disabled=1
+            AUTH-->>API: 403 账号已被禁用
+        else 正常
+            AUTH->>AUTH: _build_access_token(sub/user_id/role/name/iss/iat/exp, 900s)
+            AUTH->>AUTH: _generate_refresh_token(opaque, SHA-256 落库, 7d)
+            AUTH->>DB: INSERT refresh_tokens(token_hash, expires_at, ip, ua)
+            AUTH->>AUDIT: login_success
+            AUTH-->>API: 200 {access_token, refresh_token, expires_in, user}
+            API-->>AS: 200
+            AS->>AS: accessToken=内存；refresh_token → localStorage
+            AS->>AS: user=响应.user；status='authenticated'
+            LV-->>U: 跳转 redirect ?? '/'
+            Note over U, LV: 后续请求经 httpClient/SSE getAuthHeaders() 自动带 Authorization: Bearer <access>
+        end
+    end
+
+%% ── 4.2 401 自动 refresh 流程 ─────────────────────────────────
+sequenceDiagram
+    participant C as 业务组件
+    participant HC as httpClient（axios）
+    participant AS as authStore
+    participant API as FastAPI /auth/refresh
+    participant AUTH as AuthService
+
+    C->>HC: GET /thread/t-A（access 已过期）
+    HC->>HC: 响应 401 {"detail":"Token expired"}
+    HC->>HC: 非 auth 端点自身 + 未 _retry → 进入 refresh 路径
+    alt 已有 refreshPromise 在途
+        HC->>AS: await 同一 refreshPromise（并发去重，只发一次）
+    else 无在途
+        HC->>AS: refresh() → POST /auth/refresh {refresh_token}
+        AS->>API: POST /auth/refresh
+        API->>AUTH: refresh(token) → 查 SHA-256 → 未撤销/未过期/用户未禁用
+        AUTH->>AUTH: 轮换：旧行 revoked_at=now，replaced_by=新行 id
+        AUTH->>AUTH: 签发新 access + 新 refresh
+        AUTH-->>AS: 200 {access_token, refresh_token, user}
+        AS->>AS: access 更新；refresh 更新 localStorage；user 更新
+        AS-->>HC: 返回新 access
+    end
+    HC->>HC: 原请求 _retry=true + 新 Authorization 重放
+    HC-->>C: 200 业务数据（用户无感）
+    Note over HC, AS: refresh 也 401/失效 → AS.clear() + router.push('/login?redirect='+当前页)
+
+%% ── 4.3 UserBadge 切换 / 登出流程 ─────────────────────────────
+sequenceDiagram
+    participant U as 用户
+    participant UB as UserBadge
+    participant AS as authStore
+    participant API as FastAPI /auth/logout
+    participant AUTH as AuthService
+    participant AUDIT as auth_audit_log
+
+    U->>UB: 点击 UserBadge
+    UB->>UB: el-popover 展开（displayName + 角色 tag）
+    alt 未登录（dev 匿名）
+        UB->>UB: router.push('/login?redirect='+当前页)
+    else 已登录 → 点击「退出登录」
+        U->>UB: 退出登录
+        UB->>AS: logout()
+        AS->>API: POST /auth/logout {refresh_token}（尽力而为，失败不阻断）
+        API->>AUTH: logout(token) → 按 SHA-256 revoke 对应行（幂等）
+        AUTH->>AUDIT: logout
+        AS->>AS: clear()（access/user 清空 + localStorage 移除）
+        AS->>AS: router.push('/login?redirect='+当前页)
+    else 已登录 → 点击「切换账号」
+        U->>UB: 切换账号
+        UB->>AS: clear()（仅本地清 token，不调 logout）
+        AS->>AS: router.push('/login?redirect='+当前页)
+    else admin → 点击「用户管理」
+        UB->>UB: router.push('/admin/users')
+    end
+
+%% ── 4.4 管理员创建用户流程 ───────────────────────────────────
+sequenceDiagram
+    participant U as admin
+    participant UV as UsersView
+    participant AS as authStore
+    participant API as FastAPI /users
+    participant RBAC as require_role(ADMIN)
+    participant US as UserService
+    participant DB as users 表
+    participant AUDIT as auth_audit_log
+
+    U->>UV: 「+ 新建用户」→ 填 username/password/role → 提交
+    UV->>AS: createUser(payload) → POST /users（httpClient 带 Bearer）
+    API->>RBAC: Depends(require_role(Role.ADMIN))
+    alt 非 admin（生产）
+        RBAC-->>API: 403 权限不足
+    else admin
+        RBAC-->>API: 通过（admin）
+        API->>US: create_user(username, password, role, email, actor=admin)
+        US->>US: username 小写去重（冲突 → 409）
+        US->>US: _validate_password（≥8 位数字+字母，否则 422）
+        US->>US: _hash_password（bcrypt cost 12，72 字节截断）
+        US->>DB: INSERT users（must_change_password=1, role）
+        US->>AUDIT: user_created（actor=admin.id）
+        US-->>API: 201 UserSummary（不含 password_hash）
+        API-->>UV: 201
+        UV-->>U: 列表刷新 + 提示「用户需在首次登录时修改密码」
+    end

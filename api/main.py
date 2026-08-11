@@ -32,9 +32,8 @@ from fastapi.responses import StreamingResponse
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from loguru import logger
 from pydantic import BaseModel
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
 from api.config import APP_VERSION, settings
 from api.graph import GraphBuilder
@@ -54,6 +53,8 @@ from api.schemas import (
     ThreadSummary,
 )
 from api.routers import feature_intro_router, knowledge_upload_router
+from api.routers.auth import router as auth_router
+from api.routers.users import router as users_router
 from api.schemas.hitl_edit import EditInterruptRequest
 from api.services.auth import (
     verify_audit_thread_access,
@@ -64,6 +65,7 @@ from api.services.auth import (
 from api.services.error_handler import safe_endpoint
 from api.services.grayscale_admin_service import GrayscaleAdminService
 from api.services.hitl_audit_service import HitlAuditService, process_edit_decision
+from api.services.rate_limit import limiter
 from api.services.rbac import (
     AUDIT_FULL_ACCESS_ROLES,
     Role,
@@ -188,6 +190,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Database schema ensured (init_db)")
     except Exception as e:  # noqa: BLE001 — DB 初始化失败不阻断 API 启动
         logger.warning("init_db failed ({}), continuing (RAG may degrade)", e)
+
+    # ── V1.8.0 认证（T01）：确保初始管理员（幂等）──
+    # - 生产且 users 表无 admin 且 ADMIN_INITIAL_PASSWORD 未配置 → SystemExit
+    #   （fail-closed，对齐 JWT_SECRET 门禁；主理人拍板 8 项待明确 #1）；
+    # - dev 无 env 时用固定 dev 密码并日志告警（must_change_password=1）。
+    try:
+        from api.services.user_service import UserService
+        UserService().ensure_initial_admin()
+        logger.info("Initial admin ensured (ensure_initial_admin)")
+    except SystemExit:
+        raise
+    except Exception as e:  # noqa: BLE001 — 创建失败仅告警，不阻断 API 启动
+        logger.warning("ensure_initial_admin failed ({}), continuing", e)
 
     # ── B4：连接 MCP server（重试 3 次退避 1s/2s/4s，失败不丢工具能力于静默）──
     logger.info("Connecting to MCP server at localhost:{}...", settings.mcp_port)
@@ -328,7 +343,9 @@ app.add_middleware(
 # 默认 60 次/分钟/IP，超限返回 429 Too Many Requests。
 # 通过 ``settings.rate_limit_per_minute`` 可调；生产建议根据实际流量配置。
 # 用例见 ``@limiter.limit`` 装饰的端点（如 ``/admin/checkpoint-stats``）。
-limiter: Limiter = Limiter(key_func=get_remote_address)
+# V1.8.0 认证（T01）：limiter 提升到共享模块 api/services/rate_limit.py——
+# main（app.state.limiter）与 auth router（@limiter.limit）必须同一实例，
+# 否则 per-IP 限流失效。既有测试 ``app.state.limiter._storage.reset()`` 不变。
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -345,6 +362,12 @@ app.include_router(feature_intro_router)
 # ── V1.7：用户上传知识库路由（POST/GET/DELETE /api/knowledge/uploads*）────
 # 用户自助上传 txt/md → 解析切分入库 → 对话 RAG 可检索；与 feature-intro 隔离。
 app.include_router(knowledge_upload_router)
+
+# ── V1.8.0 认证（T02/T03）：真实登录 + 用户管理路由 ─────────────────────
+# /auth/* —— login/refresh/logout/me/change-password/dev-login（公开 + verify_jwt_if_prod）
+# /users* —— GET/POST /users、PATCH /users/{id}（require_role(ADMIN)，dev 放行）
+app.include_router(auth_router)
+app.include_router(users_router)
 
 
 # ═══════════════════════════════════════════════════════
@@ -467,6 +490,12 @@ async def chat(
     user_id = _identity_user_id(identity)
     role = get_role(identity if isinstance(identity, dict) else None)
 
+    # A4 修复（a）：零消息拒绝——空/全空白消息在懒登记（create_thread /
+    # ensure_thread_owned）**之前** 422，不向 threads 表写入空会话垃圾行。
+    # dev/prod 均生效（Q6「懒登记不产生空会话垃圾行」语义）。
+    if not req.message or not req.message.strip():
+        raise HTTPException(status_code=422, detail="message 不能为空")
+
     # ⚠️ 安全校验必须优先于 graph-ready / 业务逻辑（防探测：即使图未就绪，
     #    越权也先返回 403/404，不泄漏 thread 是否存在）
     thread_id = req.thread_id or f"thread-{id(req)}"
@@ -574,7 +603,24 @@ async def chat(
         )
 
 
-@app.get("/chat/stream/{thread_id}", dependencies=[Depends(verify_thread_ownership_if_prod)])
+def _reject_empty_message(message: str = "") -> None:
+    """A4 修复（a）：零消息拒绝——``message`` 缺失/全空白 → 422。
+
+    作为 ``/chat/stream/{thread_id}`` 的**前置**依赖（声明在
+    ``verify_thread_ownership_if_prod`` 之前），FastAPI 按依赖列表顺序执行：
+    空消息在懒登记之前被拒，不会向 threads 表写入空会话垃圾行（dev/prod 均生效）。
+    """
+    if not message or not message.strip():
+        raise HTTPException(status_code=422, detail="message 不能为空")
+
+
+@app.get(
+    "/chat/stream/{thread_id}",
+    dependencies=[
+        Depends(_reject_empty_message),
+        Depends(verify_thread_ownership_if_prod),
+    ],
+)
 async def chat_stream(
     thread_id: str,
     message: str,
@@ -588,6 +634,10 @@ async def chat_stream(
     V1.7.0 多用户：依赖升级为 ``verify_thread_ownership_if_prod``
     （生产 owner 校验 + 懒登记；dev 放行），并用 ``resolve_model``
     解析会话生效模型透传 ``graph.run(model_id=...)``。
+
+    A4 修复（a）：新增前置依赖 ``_reject_empty_message``——空白消息先于
+    懒登记 422（防空会话垃圾行）；done 事件携带 ``model_id``（真实会话
+    标识，供前端仅对「真消息已懒登记」的会话本地 upsert 侧栏）。
     """
     if graph_builder is None:
         raise HTTPException(status_code=503, detail="Graph not ready")
@@ -634,6 +684,10 @@ async def chat_stream(
             final = {
                 "type": "done",
                 "thread_id": thread_id,
+                # A4 修复（a/b）：携带会话生效模型（threads.model_id ?? 全局）。
+                # 前端据此判断「真消息已懒登记」（model_id 非空）才本地 upsert 侧栏，
+                # 空消息/异常回退不主动加列表（由 fetchSessions 后端为准）。
+                "model_id": model_id,
                 "interrupt_required": interrupt_required,
                 "interrupt_node": result.get("interrupt_tool") if isinstance(result, dict) else None,
                 "interrupt_msg": result.get("interrupt_msg") if isinstance(result, dict) else None,

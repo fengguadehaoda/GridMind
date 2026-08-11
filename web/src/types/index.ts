@@ -218,6 +218,96 @@ export interface ModelSwitchResponse {
 /** M-5 角色（与后端 api.services.rbac.Role 5 枚举一致） */
 export type Role = 'dispatcher' | 'operator' | 'kb_admin' | 'auditor' | 'admin'
 
+/* ═══════════════════════════════════════════════════════════════
+ * V1.8.0 认证（T04/T05）：真实登录 DTO
+ * 逐字段镜像后端 api/schemas/auth.py（snake_case，K-1）
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** 登录/刷新成功响应中的用户摘要（不含敏感字段） */
+export interface AuthUser {
+  id: string
+  username: string
+  display_name: string
+  role: Role
+  /** 首次登录强制改密（管理员建号默认 1；/auth/me 回填） */
+  must_change_password?: boolean
+  last_login_at?: string | null
+  password_expires_at?: string | null
+  password_expiring?: boolean
+}
+
+/** POST /auth/login | /auth/refresh | /auth/dev-login 成功响应 */
+export interface LoginResponse {
+  access_token: string
+  refresh_token: string
+  token_type: string
+  expires_in: number
+  /** MFA 扩展点（P2）：本批恒为 false，前端预留分支 */
+  mfa_required?: boolean
+  user: AuthUser
+}
+
+/** GET /auth/me 响应（含密码过期提醒，90 天策略） */
+export interface MeResponse {
+  id: string
+  username: string
+  display_name: string
+  role: Role
+  must_change_password: boolean
+  last_login_at?: string | null
+  password_expires_at?: string | null
+  password_expiring?: boolean
+}
+
+/** POST /auth/logout 响应 */
+export interface LogoutResponse {
+  ok: boolean
+}
+
+/** POST /auth/change-password 请求体 */
+export interface ChangePasswordRequest {
+  old_password: string
+  new_password: string
+}
+
+/** POST /auth/dev-login 请求体（仅 dev） */
+export interface DevLoginRequest {
+  role: Role
+}
+
+/** 用户管理列表项（GET/POST/PATCH /users；不含 password_hash） */
+export interface UserSummary {
+  id: string
+  username: string
+  email: string | null
+  role: Role
+  disabled: number
+  must_change_password: number
+  last_login_at: string | null
+  created_at: string | null
+}
+
+/** GET /users 响应 */
+export interface UsersListResponse {
+  users: UserSummary[]
+  total: number
+}
+
+/** POST /users 请求体 */
+export interface UserCreateRequest {
+  username: string
+  email?: string | null
+  password: string
+  role: Role
+}
+
+/** PATCH /users/{id} 请求体（至少一项） */
+export interface UserUpdateRequest {
+  role?: Role
+  disabled?: number
+  password?: string
+}
+
 /**
  * M-5 会话摘要（``GET /sessions`` 列表项）。
  *
@@ -389,6 +479,10 @@ export interface SseEvent {
   resolved_at?: string
   // M-3 新增：done 事件携带 knowledge_agent 轮次的结构化回答（K-6，可选）
   knowledge_answer?: KnowledgeAnswer | null
+  // A4 修复（b）：done 事件携带会话生效模型（threads.model_id ?? 全局）。
+  // 非空 = 该 thread 已真实懒登记；前端仅对 model_id 非空的 done 事件
+  // 本地 upsert 侧栏，占位 thread_id / 异常回退不主动插入（fetchSessions 为准）。
+  model_id?: string
 }
 
 /** 设备信息 */

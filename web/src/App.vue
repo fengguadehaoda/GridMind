@@ -152,6 +152,7 @@ import { useStatusCard } from './composables/useStatusCard'
 // M-5 T05：主导航数据源 + 角色解析 + 用户徽标
 import { visibleNavItems as filterNavItems } from './data/navItems'
 import { getJwtRole } from './composables/useJwtAuth'
+import { useAuthStore } from './stores/auth'
 import UserBadge from './components/controls/UserBadge.vue'
 // v1.5.1 T05 · F4 HITL 弹窗已从 App.vue 移至 ChatView.vue（架构 §3.4 + §5 T05）
 import LogoHorizontal from './components/brand/LogoHorizontal.vue'
@@ -169,8 +170,23 @@ const store = useChatStore()
 const themeStore = useThemeStore()
 const auditStore = useAuditStore()
 const displayStore = useDisplayStore()
+const authStore = useAuthStore()
 const route = useRoute()
 const router = useRouter()
+
+// V1.8.0 认证（T05）：生产会话失效安全网——status 变 anonymous（登出 /
+// refresh 失败 / hydrate 失败）且当前不在登录页 → 跳 /login?redirect=。
+// 仅 import.meta.env.PROD 生效（dev 不拦截，AC10-1）；登录页由路由守卫兜底。
+watch(
+  () => authStore.status,
+  (status) => {
+    const meta = (import.meta as { env?: Record<string, boolean | undefined> }).env
+    if (meta?.PROD !== true) return
+    if (status === 'anonymous' && route.path !== '/login') {
+      void router.push({ path: '/login', query: { redirect: route.fullPath } })
+    }
+  },
+)
 
 // V1.7.0 F-1：大屏模式扩展点——仅暴露计算属性（isBigScreen），
 // 本批不接入任何大屏布局逻辑；后续大屏 UI 在此读取。

@@ -8,6 +8,12 @@
  *   - 架构 §6.1 JWT 注入
  *   - 后端架构 SSE 鉴权已修复（R-X2 已 PASS）—— 前端必须注入 Bearer
  *
+ * V1.8.0 认证（T04）增量（架构 auth-architecture F06 + 共享知识 #11）：
+ *   - ``getJwtToken()`` 优先读 authStore 内存 access token（真实登录后），
+ *     无则回退 dev token（dev 本地零破坏）；
+ *   - 读 store 采用 ``getActivePinia()`` + ``_s.get('auth')``（懒读取），
+ *     避免模块级循环 import（stores/auth → api/auth → httpClient → useJwtAuth）。
+ *
  * 使用：
  *   import { getJwtToken, getAuthHeaders } from '@/composables/useJwtAuth'
  *
@@ -18,23 +24,38 @@
  *   const token = getJwtToken()
  *
  * 注意：
- *   - **不放在 localStorage**（防 XSS；架构 §1.5.2 红色风险）
- *   - **不放在 sessionStorage**（防 session 标签页劫持）
+ *   - **access token 不存 localStorage**（防 XSS；架构 §1.5.2 红色风险；
+ *     V1.8.0 拍板 #7：access 仅内存 / refresh 存 localStorage）
  *   - dev 默认 token 是 dev-only token，生产部署必须替换为真实登录流
  *
  * 作者：寇豆码（T01 工程师）
  */
+import { getActivePinia } from 'pinia'
 
 /**
- * 读取 dev JWT token。
+ * 读取当前 JWT token。
  *
- * 顺序：import.meta.env.VITE_DEV_JWT_TOKEN ?? 'gridmind-dev-token'
- *
- * `import.meta.env` 是 Vite 提供的类型安全方式；非 Vite 场景下退化为
- * process.env 或硬编码值。沙箱/单元测试环境通常返回 undefined。
+ * 顺序：
+ * 1. authStore 内存 access token（真实登录后；getActivePinia 懒读防循环）；
+ * 2. dev JWT：import.meta.env.VITE_DEV_JWT_TOKEN ?? 'gridmind-dev-token'
+ *    （非 Vite 场景退化为 process.env 或硬编码值）。
  */
 export function getJwtToken(): string {
-  // Vite 在编译期将 import.meta.env.VITE_DEV_JWT_TOKEN 替换为字符串字面量
+  // 1. 真实登录：authStore.accessToken 优先（lazy 读取，避免模块级循环 import）
+  try {
+    const pinia = getActivePinia()
+    if (pinia) {
+      const stores = (pinia as unknown as { _s: Map<string, { accessToken: string | null }> })._s
+      const store = stores.get('auth')
+      if (store && typeof store.accessToken === 'string' && store.accessToken.length > 0) {
+        return store.accessToken
+      }
+    }
+  } catch {
+    // 无 active pinia（Node 单测 / 初始化前）→ 回退 dev token
+  }
+
+  // 2. dev token 回退（Vite 在编译期将 VITE_DEV_JWT_TOKEN 替换为字符串字面量）
   const fromEnv = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_DEV_JWT_TOKEN
   if (typeof fromEnv === 'string' && fromEnv.length > 0) {
     return resolveDevToken(fromEnv)

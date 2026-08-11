@@ -20,13 +20,14 @@ import './styles/utilities.scss'        // 工具类
 import 'driver.js/dist/driver.css'
 
 import App from './App.vue'
-import router from './router'
+import router, { setupAuthGuard } from './router'
 // v1.5.0 T01: 显示策略 store + onboarding store 的 hydrate 必须在 mount 前完成
 // 详见架构文档 §3.3 + 任务说明
 import { useDisplayStore } from './stores/display'
 import { useOnboardingStore } from './stores/onboarding'
 import { useReasoningStore } from './stores/reasoning'
 import { useAuditStore } from './stores/audit'
+import { useAuthStore } from './stores/auth'
 import { setupOnboardingGuard } from './composables/useOnboarding'
 
 const app = createApp(App)
@@ -60,9 +61,15 @@ useDisplayStore().hydrate()
 useOnboardingStore().hydrate()
 useReasoningStore().hydrate()
 useAuditStore().hydrate()
+// V1.8.0 认证（T04/T05）：启动时用 refresh token 尝试恢复会话（access 仅内存，
+// F5 后必须靠 hydrate 恢复；失败 → status=anonymous，由生产路由守卫跳登录）。
+void useAuthStore().hydrate()
 
 // v1.5.0 T04: 注册路由守卫（未完成 onboarding → 自动跳转 /onboarding）
 // 必须在 app.mount('#app') 之前注册，router 解析首屏路由时即生效
 setupOnboardingGuard(router)
+
+// V1.8.0 认证（T05）：注册生产路由守卫（仅 import.meta.env.PROD 生效，dev 不拦截）
+setupAuthGuard(router)
 
 app.mount('#app')

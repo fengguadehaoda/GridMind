@@ -1,4 +1,3 @@
-import axios from 'axios'
 import type {
   ChatResponse,
   SseEvent,
@@ -20,6 +19,11 @@ import type {
 } from '../types'
 import { getAuthHeaders, getJwtToken } from '../composables/useJwtAuth'
 import { useDisplayStore } from '../stores/display'
+// V1.8.0 认证（T04）：复用共享 httpClient（401 自动 refresh 重放 + Bearer 注入）。
+// resolveBaseUrl 由 httpClient 提供并在此转发，保持既有 importers 零改动。
+import httpClient, { resolveBaseUrl } from './httpClient'
+
+export { resolveBaseUrl }
 
 /** 读取当前显示模式（standard | presentation）作为 X-Display-Mode header 值。
  *
@@ -41,38 +45,11 @@ export function getDisplayModeHeader(): string {
   }
 }
 
-/** 基础 URL：
- * - 默认 '/api'（Vite 开发期 proxy 用）
- * - 优先级：VITE_API_BASE 环境变量（import.meta.env / process.env 双查）→ '/api'
- *
- * Vite dev 编译时 import.meta.env.VITE_API_BASE 会被替换为字符串字面量；
- * 单元测试/Node 环境无 Vite，故同时支持 process.env（便于 e2e + test 切换 base URL）。
- *
- * F4 修复（QA F4 P1）：导出本函数，ChatView.resolveApiBase 统一复用 ——
- * 生产兜底为相对路径 '/api'（Vite proxy），绝不回退到 http://localhost:9900。
- */
-export function resolveBaseUrl(): string {
-  const metaEnv = (import.meta as { env?: Record<string, string | undefined> }).env
-  if (typeof metaEnv?.VITE_API_BASE === 'string' && metaEnv.VITE_API_BASE.length > 0) {
-    return metaEnv.VITE_API_BASE.replace(/\/$/, '')
-  }
-  const procEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-  if (typeof procEnv?.VITE_API_BASE === 'string' && procEnv.VITE_API_BASE.length > 0) {
-    return procEnv.VITE_API_BASE.replace(/\/$/, '')
-  }
-  return '/api'
-}
-
 const BASE = resolveBaseUrl()
-
-const http = axios.create({
-  baseURL: BASE,
-  timeout: 60000,
-})
 
 /** POST /chat — 发送消息（阻塞模式） */
 export async function sendMessage(message: string, threadId?: string): Promise<ChatResponse> {
-  const { data } = await http.post<ChatResponse>(
+  const { data } = await httpClient.post<ChatResponse>(
     '/chat',
     {
       message,
@@ -163,7 +140,7 @@ export function streamChat(
 
 /** POST /interrupt/{thread_id}/approve — 批准 HITL（老端点，向后兼容 1 季度） */
 export async function approveInterrupt(threadId: string, reason = ''): Promise<ChatResponse> {
-  const { data } = await http.post<ChatResponse>(
+  const { data } = await httpClient.post<ChatResponse>(
     `/interrupt/${encodeURIComponent(threadId)}/approve`,
     { reason },
     { headers: getAuthHeaders() },
@@ -173,7 +150,7 @@ export async function approveInterrupt(threadId: string, reason = ''): Promise<C
 
 /** POST /interrupt/{thread_id}/reject — 拒绝 HITL（老端点，向后兼容 1 季度） */
 export async function rejectInterrupt(threadId: string, reason = ''): Promise<ChatResponse> {
-  const { data } = await http.post<ChatResponse>(
+  const { data } = await httpClient.post<ChatResponse>(
     `/interrupt/${encodeURIComponent(threadId)}/reject`,
     { reason },
     { headers: getAuthHeaders() },
@@ -194,7 +171,7 @@ export async function decideInterrupt(
   threadId: string,
   payload: InterruptDecisionRequest,
 ): Promise<InterruptDecisionResponse> {
-  const { data } = await http.post<InterruptDecisionResponse>(
+  const { data } = await httpClient.post<InterruptDecisionResponse>(
     `/interrupt/${encodeURIComponent(threadId)}/decision`,
     payload,
     { headers: getAuthHeaders() },
@@ -204,25 +181,25 @@ export async function decideInterrupt(
 
 /** GET /thread/{thread_id} — 查询线程历史 */
 export async function getThread(threadId: string) {
-  const { data } = await http.get(`/thread/${encodeURIComponent(threadId)}`)
+  const { data } = await httpClient.get(`/thread/${encodeURIComponent(threadId)}`)
   return data
 }
 
 /** GET / — 健康检查 */
 export async function healthCheck() {
-  const { data } = await http.get('/')
+  const { data } = await httpClient.get('/')
   return data
 }
 
 /** GET /audit/hitl/{thread_id} — 查询 HITL 审计日志 */
 export async function getHitlAudit(threadId: string) {
-  const { data } = await http.get(`/audit/hitl/${encodeURIComponent(threadId)}`)
+  const { data } = await httpClient.get(`/audit/hitl/${encodeURIComponent(threadId)}`)
   return data as { thread_id: string; count: number; entries: Array<Record<string, unknown>> }
 }
 
 /** GET /diagnosis/{thread_id}/reasoning — 拉取诊断完整推理链（P0 可解释性 AI） */
 export async function getDiagnosisReasoning(threadId: string): Promise<DiagnosisFusionResult> {
-  const { data } = await http.get<DiagnosisFusionResult>(`/diagnosis/${encodeURIComponent(threadId)}/reasoning`)
+  const { data } = await httpClient.get<DiagnosisFusionResult>(`/diagnosis/${encodeURIComponent(threadId)}/reasoning`)
   return data
 }
 
@@ -252,7 +229,7 @@ export async function pauseSession(
   threadId: string,
   reason: string = 'user_manual',
 ): Promise<PauseSessionResponse> {
-  const { data } = await http.post<PauseSessionResponse>(
+  const { data } = await httpClient.post<PauseSessionResponse>(
     `/sessions/${encodeURIComponent(threadId)}/pause`,
     { reason },
     { headers: getAuthHeaders() },
@@ -267,7 +244,7 @@ export async function pauseSession(
  * 区别于首次 start（action = 'start'）。
  */
 export async function resumeSession(threadId: string): Promise<ResumeSessionResponse> {
-  const { data } = await http.post<ResumeSessionResponse>(
+  const { data } = await httpClient.post<ResumeSessionResponse>(
     `/sessions/${encodeURIComponent(threadId)}/resume`,
     { action: 'continue_from_pause' },
     { headers: getAuthHeaders() },
@@ -285,7 +262,7 @@ export async function rewindSession(
   threadId: string,
   body: RewindSessionRequest,
 ): Promise<RewindSessionResponse> {
-  const { data } = await http.post<RewindSessionResponse>(
+  const { data } = await httpClient.post<RewindSessionResponse>(
     `/sessions/${encodeURIComponent(threadId)}/rewind`,
     body,
     { headers: getAuthHeaders() },
@@ -302,7 +279,7 @@ export async function abortSession(
   threadId: string,
   body: AbortSessionRequest = {},
 ): Promise<AbortSessionResponse> {
-  const { data } = await http.post<AbortSessionResponse>(
+  const { data } = await httpClient.post<AbortSessionResponse>(
     `/sessions/${encodeURIComponent(threadId)}/abort`,
     body,
     { headers: getAuthHeaders() },
@@ -334,7 +311,7 @@ export async function getSessionCheckpoints(
     created_at: string
   }>
 }> {
-  const { data } = await http.get(`/sessions/${encodeURIComponent(threadId)}/checkpoints`, {
+  const { data } = await httpClient.get(`/sessions/${encodeURIComponent(threadId)}/checkpoints`, {
     headers: getAuthHeaders(),
   })
   return data
@@ -347,7 +324,7 @@ export async function getSessionCheckpoints(
  * 暴露 axios 版本便于其他模块直接调用（独立于 audit store）。
  */
 export async function fetchPendingHitlCount(): Promise<PendingHitlCountResponse> {
-  const { data } = await http.get<PendingHitlCountResponse>(`/audit/pending-count`, {
+  const { data } = await httpClient.get<PendingHitlCountResponse>(`/audit/pending-count`, {
     headers: getAuthHeaders(),
   })
   return data
@@ -368,7 +345,7 @@ export async function fetchAuditDecisions(
   const params: Record<string, string | number> = { limit }
   if (decision) params.decision = decision
   if (riskLevel) params.risk_level = riskLevel
-  const { data } = await http.get<AuditResponse>(`/audit/hitl`, {
+  const { data } = await httpClient.get<AuditResponse>(`/audit/hitl`, {
     params,
     headers: getAuthHeaders(),
   })
@@ -381,7 +358,7 @@ export async function fetchAuditDecisions(
  * AuditResponse 中不一定需要 body，这里传空 {} 保持 REST 约定。
  */
 export async function hitlApprove(taskId: string): Promise<AuditResponse> {
-  const { data } = await http.post<AuditResponse>(
+  const { data } = await httpClient.post<AuditResponse>(
     `/hitl/${encodeURIComponent(taskId)}/approve`,
     {},
     { headers: getAuthHeaders() },
@@ -398,7 +375,7 @@ export async function hitlReject(
   taskId: string,
   payload: Pick<HitlAuditDecisionPayload, 'reason'>,
 ): Promise<AuditResponse> {
-  const { data } = await http.post<AuditResponse>(
+  const { data } = await httpClient.post<AuditResponse>(
     `/hitl/${encodeURIComponent(taskId)}/reject`,
     payload,
     { headers: getAuthHeaders() },
@@ -431,7 +408,7 @@ export async function hitlApproveWithEdit(
   if (payload.edit_reason !== undefined) {
     body.edit_reason = payload.edit_reason
   }
-  const { data } = await http.post<AuditResponse>(
+  const { data } = await httpClient.post<AuditResponse>(
     `/hitl/${encodeURIComponent(taskId)}/approve-with-edit`,
     body,
     { headers: getAuthHeaders() },
