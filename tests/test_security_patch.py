@@ -374,7 +374,7 @@ class TestExceptionLeak:
         import api.main
 
         class _ExplodingBuilder:
-            async def run(self, thread_id, message, display_mode=None):
+            async def run(self, thread_id, message, display_mode=None, model_id=None):
                 raise RuntimeError("leaked_secret=ABC123 internal path")
 
         original_builder = api.main.graph_builder
@@ -512,7 +512,7 @@ class TestE2E:
                 self.pause_called = False
                 self.run_called = False
 
-            async def run(self, thread_id, message, display_mode=None):
+            async def run(self, thread_id, message, display_mode=None, model_id=None):
                 self.run_called = True
                 return {
                     "messages": [

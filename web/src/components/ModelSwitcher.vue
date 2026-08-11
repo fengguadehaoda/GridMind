@@ -16,6 +16,10 @@ onMounted(() => {
   modelStore.init()
 })
 
+// V1.7.0 M-2：会话级模型绑定——展示当前激活会话的生效模型（无激活会话走全局）
+const isSessionScoped = computed(() => !!modelStore.activeThreadId)
+const activeSessionModelId = computed<string | null>(() => modelStore.activeSessionModel())
+
 const currentLabel = computed(() => modelStore.currentInfo?.label || modelStore.current || '加载中')
 const providerLabel = computed(() => {
   const p = modelStore.currentInfo?.provider
@@ -31,7 +35,8 @@ const providerColor = computed(() => {
 })
 
 async function handleSelect(m: ModelInfo) {
-  if (m.id === modelStore.current) {
+  const active = activeSessionModelId.value ?? modelStore.current
+  if (m.id === active) {
     isOpen.value = false
     return
   }
@@ -82,13 +87,15 @@ onUnmounted(() => {
 
     <transition name="gm-fade">
       <div v-if="isOpen" class="gm-model-switcher__dropdown">
-        <div class="gm-model-switcher__title">选择 LLM 模型</div>
+        <div class="gm-model-switcher__title">
+          选择 LLM 模型{{ isSessionScoped ? '（当前会话）' : '' }}
+        </div>
         <button
           v-for="m in modelStore.available"
           :key="m.id"
           type="button"
           class="gm-model-switcher__option"
-          :class="{ 'gm-model-switcher__option--active': m.id === modelStore.current }"
+          :class="{ 'gm-model-switcher__option--active': m.id === (activeSessionModelId ?? modelStore.current) }"
           :disabled="modelStore.switching"
           @click="handleSelect(m)"
         >
@@ -97,7 +104,7 @@ onUnmounted(() => {
               {{ m.provider === 'dashscope' ? '千问' : 'DeepSeek' }}
             </span>
             <span class="gm-model-switcher__option-label">{{ m.label }}</span>
-            <span v-if="m.id === modelStore.current" class="gm-model-switcher__option-check">✓</span>
+            <span v-if="m.id === (activeSessionModelId ?? modelStore.current)" class="gm-model-switcher__option-check">✓</span>
           </div>
           <div class="gm-model-switcher__option-desc">{{ m.description }}</div>
         </button>
@@ -180,7 +187,9 @@ onUnmounted(() => {
   border-radius: 12px;
   padding: 6px;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-  z-index: 1000;
+  /* P2-D（R-1f）：下拉与弹窗同层 var(--z-dialog) 会在弹窗打开时竞争 →
+     改为 var(--z-dropdown)（100），严格低于弹窗（1000） */
+  z-index: var(--z-dropdown);
   backdrop-filter: blur(20px);
 }
 

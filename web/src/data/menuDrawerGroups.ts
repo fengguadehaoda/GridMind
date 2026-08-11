@@ -31,6 +31,8 @@ import HitlBadge from '@/components/controls/HitlBadge.vue'
 import SessionBadge from '@/components/controls/SessionBadge.vue'
 import OnboardingTrigger from '@/components/controls/OnboardingTrigger.vue'
 import type { MenuDrawerEntry, MenuDrawerGroup } from '@/types/header'
+// M-5 T05：角色矩阵常量复用 navItems 唯一数据源（避免两处漂移）
+import { ROLES_AUDIT, ROLES_GRAYSCALE, ROLES_SYSTEM } from './navItems'
 
 /** 视图分组：5 路由 + 帮助中心（route 型，跳转后关闭抽屉） */
 const VIEW_GROUP: MenuDrawerGroup = {
@@ -60,6 +62,7 @@ const VIEW_GROUP: MenuDrawerGroup = {
       icon: Histogram as Component,
       route: '/grayscale',
       keywords: ['灰度', 'grayscale', '切流', 'hd'],
+      roles: ROLES_GRAYSCALE,
     },
     {
       id: 'route-audit',
@@ -68,6 +71,7 @@ const VIEW_GROUP: MenuDrawerGroup = {
       icon: Document as Component,
       route: '/audit',
       keywords: ['审计', 'audit', 'hitl', '审批', 'sj'],
+      roles: ROLES_AUDIT,
     },
     {
       id: 'route-system',
@@ -76,6 +80,7 @@ const VIEW_GROUP: MenuDrawerGroup = {
       icon: DataBoard as Component,
       route: '/system',
       keywords: ['系统', 'system', '总览', 'xt'],
+      roles: ROLES_SYSTEM,
     },
     {
       id: 'route-help',

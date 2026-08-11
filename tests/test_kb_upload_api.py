@@ -396,10 +396,16 @@ class TestAuth:
         assert resp.status_code == 401, resp.text
 
     def test_prod_with_valid_jwt_ok(self, prod_client: TestClient) -> None:
-        """生产：合法 JWT → 三端点放行（上传 → 列表 → 删除）。"""
+        """生产：合法 JWT（知识管理员角色）→ 三端点放行（上传 → 列表 → 删除）。
+
+        V1.7.0 P1-3 变更：KB 写操作需 ``require_role(KB_ADMIN, ADMIN)``，
+        因此上传/删除需携带 ``role=kb_admin`` 的 JWT；读（列表）任意登录用户可读。
+        """
         from api.services.auth import issue_test_token
 
-        token = issue_test_token(user_id="u-1")
+        token = issue_test_token(
+            user_id="u-1", extra_claims={"role": "kb_admin"},
+        )
         headers = {"Authorization": f"Bearer {token}"}
 
         up = prod_client.post(

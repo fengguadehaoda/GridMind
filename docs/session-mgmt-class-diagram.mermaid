@@ -1,0 +1,153 @@
+classDiagram
+    direction LR
+
+    %% ═══════════ 后端（Backend） ═══════════
+
+    class ThreadStore {
+        +get_thread(thread_id: str) dict | None
+        +get_owner(thread_id: str) str | None
+        +thread_exists(thread_id: str) bool
+        +create_thread(thread_id: str, owner_id: str, title: str, model_id: str | None) None
+        +ensure_thread(thread_id: str, owner_id: str, title: str) dict
+        +set_model(thread_id: str, model_id: str) None
+        +get_model(thread_id: str) str | None
+        +rename_thread(thread_id: str, title: str) bool
+        +set_archived(thread_id: str, archived: int, deleted_at: str | None) bool
+        +list_by_owner(owner_id: str, archived: int | None) list[dict]
+        +list_thread_ids_by_owner(owner_id: str) list[str]
+        +count() int
+    }
+
+    class ThreadStoreModule {
+        <<module api.services.thread_store>>
+        +get_model_for_thread(thread_id: str) str
+        +set_model_for_thread(thread_id: str, model_id: str) None
+        +resolve_model(thread_id: str | None) str
+        +ensure_thread_owned(thread_id: str, user_id: str, role: str | Role, strict: bool | None) None
+        +delete_thread(thread_id: str) bool
+    }
+
+    class SessionSchema {
+        <<api.schemas>>
+        +ThreadSummary: thread_id, title, model_id, created_at, updated_at, archived
+        +SessionListResponse: sessions, total
+        +SessionRenameRequest: title
+        +SessionActionResponse: ok, thread_id, archived, title
+    }
+
+    class SessionEndpoints {
+        <<api.main.py>>
+        +GET /sessions?archived=0|1|2|all
+        +PATCH /sessions/{thread_id}
+        +POST /sessions/{thread_id}/archive
+        +POST /sessions/{thread_id}/restore
+        +DELETE /sessions/{thread_id}
+    }
+
+    class Rbac {
+        <<api.services.rbac>>
+        +Role: dispatcher | operator | kb_admin | auditor | admin
+        +get_role(payload) Role
+        +require_role(*roles) dependency
+        +role_allows(role, required) bool
+    }
+
+    %% ═══════════ 前端（Frontend） ═══════════
+
+    class ChatStore {
+        +messages: ChatMessage[]
+        +threadId: string
+        +activeThreadId: string
+        +sessions: SessionSummary[]
+        +archivedSessions: SessionSummary[]
+        +sessionsLoading: boolean
+        +sessionError: string | null
+        +sessionMessagesCache: Record<string, ChatMessage[]>
+        +streaming: boolean
+        +interruptRequired: boolean
+        +fetchSessions() Promise
+        +newSession() void
+        +activateThread(threadId) Promise
+        +guardSwitchSession() Promise_boolean
+        +renameSession(threadId, title) Promise
+        +archiveSession(threadId) Promise
+        +restoreSession(threadId) Promise
+        +deleteSession(threadId) Promise
+        +resetChat() void
+        +sendMessage(text) Promise
+        +decideHitl(decision, options) Promise
+    }
+
+    class SessionsApi {
+        <<web/src/api/sessions.ts>>
+        +fetchSessions(archived?) Promise~SessionsResponse~
+        +renameSession(threadId, title) Promise
+        +archiveSession(threadId) Promise
+        +restoreSession(threadId) Promise
+        +deleteSession(threadId) Promise
+    }
+
+    class SessionSidebar {
+        <<SessionSidebar.vue>>
+        +renderSessions()
+        +renderArchivedGroup()
+        +onNewSession()
+        +onActivate(tid)
+        +onRename(tid)
+        +onArchive(tid)
+        +onDelete(tid)
+        +onExport(kind: 'md' | 'json')
+    }
+
+    class ChatView {
+        <<ChatView.vue>>
+        +layout: flex row (sidebar + chat column)
+        +attachSse(sessionId)
+        +watch(threadId) -> modelStore.setActiveThread
+    }
+
+    class SessionExport {
+        <<export/sessionExport.ts>>
+        +buildMarkdown(meta, messages) string
+        +buildJson(meta, messages) object
+        +downloadFile(filename, content, mime) void
+    }
+
+    class JwtAuth {
+        <<useJwtAuth.ts>>
+        +getJwtToken() string
+        +getAuthHeaders() Record
+        +parseJwtPayload(token) Record | null
+        +getJwtRole() Role
+        +getJwtUserId() string | null
+        +getJwtDisplayName() string
+    }
+
+    class UserBadge {
+        <<UserBadge.vue>>
+        +displayName: string
+        +role: Role
+    }
+
+    class KnowledgeUpload {
+        <<KnowledgeUpload.vue>>
+        +canManageKb: boolean
+        +handleFileChange(file)
+        +confirmDelete(item)
+    }
+
+    %% ═══════════ 关系（Relationships） ═══════════
+
+    SessionEndpoints --> ThreadStoreModule : handler 内联调用 ensure_thread_owned
+    SessionEndpoints --> ThreadStore : list/rename/set_archived
+    SessionEndpoints --> Rbac : get_role / admin token 判定
+    SessionEndpoints --> SessionSchema : 请求/响应模型
+
+    ChatStore --> SessionsApi : fetch/rename/archive/restore/delete
+    ChatStore --> ChatView : activeThreadId / messages / streaming 契约
+    SessionSidebar --> ChatStore : 调用会话 actions
+    SessionSidebar --> SessionExport : 导出当前激活会话
+    ChatView --> SessionSidebar : 布局嵌挂（flex row 左栏）
+    SessionSidebar --> JwtAuth : 导出元信息 user_id（可选）
+    UserBadge --> JwtAuth : getJwtRole/getJwtUserId/getJwtDisplayName
+    KnowledgeUpload --> JwtAuth : getJwtRole -> canManageKb

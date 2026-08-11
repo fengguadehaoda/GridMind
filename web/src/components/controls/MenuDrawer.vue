@@ -19,6 +19,8 @@ import { menuDrawerGroups, menuDrawerQuickEntries } from '@/data/menuDrawerGroup
 import type { MenuDrawerEntry, MenuDrawerGroup } from '@/types/header'
 import { useViewport } from '@/composables/useViewport'
 import { registerHotkey } from '@/utils/hotkeys'
+// M-5 T05：角色解析（路由入口按 roles 过滤；快捷区全员保留）
+import { getJwtRole } from '@/composables/useJwtAuth'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void }>()
@@ -47,16 +49,22 @@ function matches(entry: MenuDrawerEntry, kw: string): boolean {
   return false
 }
 
-/** 分组过滤：关键词命中任一条目才保留该分组 */
+/** 分组过滤：角色可见 + 关键词命中任一条目才保留该分组 */
 const filteredGroups = computed<MenuDrawerGroup[]>(() => {
   const kw = keyword.value.trim()
-  if (!kw) return menuDrawerGroups
+  const role = getJwtRole()
   return menuDrawerGroups
-    .map((g) => ({ ...g, entries: g.entries.filter((e) => matches(e, kw)) }))
+    .map((g) => ({
+      ...g,
+      entries: g.entries.filter((e) => {
+        const visible = !e.roles || e.roles.length === 0 || e.roles.includes(role)
+        return visible && matches(e, kw)
+      }),
+    }))
     .filter((g) => g.entries.length > 0)
 })
 
-/** 底部快捷区过滤 */
+/** 底部快捷区：全员保留（架构 §八 待明确 5）；仅关键词过滤 */
 const filteredQuick = computed(() =>
   menuDrawerQuickEntries.filter((e) => matches(e, keyword.value)),
 )

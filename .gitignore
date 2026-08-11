@@ -61,6 +61,11 @@ web/pnpm-lock.yaml
 # Vite 构建产物
 web/dist/
 web/dist-*/
+# 遗留 A4/B3：下划线变体构建备份（如 dist_qa_backup_*）与 QA 打包产物
+web/dist_*/
+web/qa_*.mjs
+web/qa_*.ts
+web/qa_shots/
 # Vite 配置文件运行时临时产物（dev server 热更新生成的 timestamp 文件）
 web/vite.config.ts.timestamp-*.mjs
 # 前端 QA 临时产物（截图/结果/临时脚本/测试输出）
@@ -87,6 +92,9 @@ web/src/.vite/
 /import_err*.txt
 /import_exit*.txt
 /route_verify*.txt
+
+# ===== 基准测试结果（每次 pytest 自动更新，避免提交后 dirty）=====
+benchmarks/results/
 
 # ===== WorkBuddy 工作区 =====
 # WorkBuddy workspace memory（项目级 .workbuddy/）

@@ -278,9 +278,15 @@ export interface ThinkingIndicatorProps {
 // v1.5.0 · P0-1 + P0-2 + P0-4 · 显示 / 状态 / 色盲 / 引导
 // ═══════════════════════════════════════════════════════
 
-// ─── DisplayMode（P0-1 背景演示/标准开关）────
-/** 显示模式：'standard' = 长时间盯盘（背景降噪）/ 'presentation' = 汇报演示（背景全开） */
-export type DisplayMode = 'standard' | 'presentation'
+// ─── DisplayMode（P0-1 背景演示/标准开关 + V1.7.0 F-1 大屏预留）────
+/**
+ * 显示模式：
+ * - 'standard' = 长时间盯盘（背景降噪）
+ * - 'presentation' = 汇报演示（背景全开）
+ * - 'bigscreen' = 大屏模式（V1.7.0 F-1 仅预留扩展点：类型/守卫/getter/断点
+ *   token 已就绪，完整大屏 UI 在后续批次实现，本批不接入任何布局逻辑）
+ */
+export type DisplayMode = 'standard' | 'presentation' | 'bigscreen'
 
 /** displayMode 持久化键（架构 §7.1 命名约定：gridmind.{域}.{项}） */
 export const DISPLAY_MODE_STORAGE_KEY = 'gridmind.displayMode' as const

@@ -1,0 +1,90 @@
+sequenceDiagram
+    %% M-5 关键流程总览：会话列表+切换 / 管理写操作 / 导出 / 角色感知
+
+    %% ── 4.1 会话列表加载 + 切换（activateThread）──
+    participant U as 张三（调度员）
+    participant SB as SessionSidebar
+    participant CS as chatStore
+    participant API as FastAPI /sessions
+    participant TS as threads 表
+
+    U->>SB: 进入对话页
+    SB->>CS: fetchSessions()
+    CS->>API: GET /sessions?archived=0（Bearer JWT）
+    API->>API: verify_jwt_if_prod → user_id=ZS, role=dispatcher
+    API->>TS: SELECT ... WHERE owner_id='ZS' AND archived=0 ORDER BY updated_at DESC
+    TS-->>API: [会话A, 会话B]
+    API-->>CS: {sessions, total}
+    CS->>CS: sessions = [...]（modelStore 由 ChatView watch(threadId) 自动绑定）
+    SB-->>U: 侧栏渲染（激活项高亮）
+
+    U->>SB: 点击会话 B
+    SB->>CS: guardSwitchSession() → streaming? 确认 → sseController.abort()
+    CS->>CS: 缓存会话A messages → sessionMessagesCache['t-A']
+    alt sessionMessagesCache 有 t-B
+        CS->>CS: 恢复 t-B 内存消息
+    else 无缓存
+        CS->>API: GET /thread/t-B（verify_thread_ownership_if_prod）
+        API-->>CS: messages → 映射 ChatMessage[]
+    end
+    CS->>CS: threadId='t-B'；重置 HITL 态；reasoning.reset()+start('t-B')
+    Note over CS, API: ChatView watch(threadId) → modelStore.setActiveThread('t-B')（M-2 已有）
+    Note over CS, API: ChatView watch(reasoning.sessionId) → attachSse('t-B')
+    SB-->>U: 会话 B 激活（消息/模型/HITL/推理链全部切到 B）
+
+    %% ── 4.2 重命名 / 归档 / 删除（owner 校验 + 软删）──
+    U->>SB: ⋯菜单 → 重命名「#1 主变异常处置」
+    SB->>CS: renameSession('t-A', '主变异常处置')
+    CS->>API: PATCH /sessions/t-A {title}
+    API->>API: ensure_thread_owned(t-A, ZS, dispatcher)
+    API->>TS: SELECT owner_id, archived FROM threads WHERE thread_id='t-A'
+    TS-->>API: owner=ZS, archived=0
+    API->>TS: UPDATE title, updated_at=now
+    TS-->>API: ok
+    API-->>CS: ThreadSummary(title 更新后)
+    CS->>CS: sessions 本地同步
+    SB-->>U: 侧栏标题即时刷新
+
+    U->>SB: ⋯菜单 → 归档
+    CS->>API: POST /sessions/t-A/archive
+    API->>API: ensure_thread_owned → 通过
+    API->>TS: UPDATE archived=1, updated_at=now
+    API-->>CS: {ok, archived:1}
+    CS->>CS: sessions 移除 t-A → archivedSessions 加入；激活态则 newSession()
+    SB-->>U: t-A 移入「已归档」分组
+
+    U->>SB: ⋯菜单 → 删除（二次确认）
+    CS->>API: DELETE /sessions/t-B
+    API->>API: ensure_thread_owned → 通过
+    API->>TS: UPDATE archived=2, deleted_at=now
+    API-->>CS: {ok, archived:2}
+    CS->>CS: 列表移除 t-B；激活态则 newSession()
+    Note over TS: checkpoint 保留（TTL 清理）；审计 /audit/hitl/{id} 仍可追溯
+
+    %% ── 4.3 导出 Markdown（前端 Blob，零后端调用）──
+    participant EXP as sessionExport.ts
+    U->>SB: 顶部「导出 ▾」→ 导出 Markdown
+    SB->>CS: 取当前激活会话 messages（exportableMessages）
+    CS-->>SB: ChatMessage[]（含 knowledgeAnswer）
+    SB->>EXP: buildMarkdown(threadId, title, modelId, messages, {user_id, role})
+    EXP->>EXP: 组装标题/元信息/消息/来源引用/图谱推理路径（PRD §4.2）
+    EXP->>EXP: downloadFile(`${title}-${threadIdTail}-${ts}.md`, content, 'text/markdown')
+    Note over EXP: Blob + URL.createObjectURL + a.click + revokeObjectURL
+    SB-->>U: 浏览器下载 .md 文件
+    Note over SB, EXP: 空会话 → ElMessage 提示，不生成文件（AC2-4）
+
+    %% ── 4.4 角色感知导航渲染 ──
+    participant AUTH as useJwtAuth
+    participant APP as App.vue
+    participant KB as KnowledgeUpload.vue
+    U->>APP: 登录（Bearer JWT, role=operator）
+    APP->>AUTH: getJwtRole() → base64url 解码 payload.role → 'operator'
+    AUTH-->>APP: 'operator'
+    APP->>APP: visibleNavItems = navItems.filter(i => !i.roles || i.roles.includes('operator'))
+    Note over APP: 灰度面板✓ / HITL审计✓ / 系统总览✗（admin）
+    APP-->>U: Header 显示「运维」徽标 + 可见导航
+    U->>KB: 打开知识库页（operator）
+    KB->>AUTH: getJwtRole() === 'operator'
+    KB->>KB: canManageKb=false（仅 kb_admin/admin）
+    Note over KB: 上传区/删除列隐藏；列表/检索全员保留
+    Note over APP: 安全兜底：绕过前端直调 API → 后端 require_role 仍 403

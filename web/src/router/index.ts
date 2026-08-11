@@ -65,6 +65,13 @@ const router = createRouter({
       component: () => import('../views/HelpCenter.vue'),
       meta: { title: '帮助中心 · 灵枢电网' },
     },
+    {
+      // V1.7.0 F-1 新增：大屏模式占位路由（仅接口预留，不实现大屏 UI）
+      path: '/bigscreen',
+      name: 'bigscreen',
+      component: () => import('../views/BigScreenPlaceholder.vue'),
+      meta: { title: '大屏模式 · 灵枢电网', public: true },
+    },
   ],
 })
 

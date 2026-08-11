@@ -88,3 +88,93 @@ export const DEV_DEFAULT_JWT_TOKEN = 'gridmind-dev-token' as const
 
 /** 生产占位符（web/.env 中未注入真实 token 时的占位值；fail-closed 检测用） */
 const DEV_TOKEN_PLACEHOLDER = 'REPLACE_ME_IN_PRODUCTION' as const
+
+/* ═══════════════════════════════════════════════════════════
+ * M-5 角色感知 UI（T05 · 方案 A：前端 base64url 解码 JWT payload）
+ *
+ * 职责边界（PRD §3.2/§六 + 架构 §7 #3）：
+ *   - 前端角色解析**仅承担展示层 UX**，不承担安全职责；
+ *   - 安全由后端 RBAC + owner 校验兜底（403/404 fail-closed）；
+ *   - 解析失败 / 缺失 / 未知 role（含 dev token `gridmind-dev-token`）
+ *     → 默认 `dispatcher`（fail-closed 到最保守的展示层），**绝不抛错**。
+ * ═══════════════════════════════════════════════════════════ */
+
+/** M-5 角色（与后端 5 角色枚举对齐；见 types/index.ts Role） */
+export type JwtRole = 'dispatcher' | 'operator' | 'kb_admin' | 'auditor' | 'admin'
+
+/** 合法 role claim 值集合（与后端 ROLE_VALUES 一致） */
+const JWT_ROLE_VALUES: ReadonlySet<string> = new Set([
+  'dispatcher',
+  'operator',
+  'kb_admin',
+  'auditor',
+  'admin',
+])
+
+/**
+ * base64url 解码 JWT 中段（payload）。
+ *
+ * @param token - JWT 字符串（`header.payload.signature`）
+ * @returns 解码后的 payload 对象；格式非法 / 解码失败 → null（不抛错）
+ */
+export function parseJwtPayload(token: string): Record<string, unknown> | null {
+  if (!token || typeof token !== 'string') return null
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  const payloadPart = parts[1]
+  if (!payloadPart) return null
+  try {
+    // base64url → base64（补齐 padding，替换 URL 安全字符）
+    let b64 = payloadPart.replace(/-/g, '+').replace(/_/g, '/')
+    while (b64.length % 4 !== 0) b64 += '='
+    const decoded = decodeURIComponent(
+      Array.prototype.map
+        .call(atob(b64), (c: string) => `%${c.charCodeAt(0).toString(16).padStart(2, '0')}`)
+        .join(''),
+    )
+    const obj: unknown = JSON.parse(decoded)
+    return obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : null
+  } catch {
+    // 解码失败（dev token / 非法 base64 / 非 JSON）→ null（fail-closed）
+    return null
+  }
+}
+
+/**
+ * 解析当前 JWT 的 `role` claim → 角色（缺省 dispatcher）。
+ *
+ * 规则（架构 §7 #3）：合法值 `dispatcher|operator|kb_admin|auditor|admin`
+ * → 对应 Role；缺失 / 未知 / 解码失败（含 dev token）→ `dispatcher`。
+ */
+export function getJwtRole(): JwtRole {
+  const token = getJwtToken()
+  const payload = parseJwtPayload(token)
+  const raw = payload?.role
+  if (typeof raw === 'string' && JWT_ROLE_VALUES.has(raw.trim().toLowerCase())) {
+    return raw.trim().toLowerCase() as JwtRole
+  }
+  return 'dispatcher'
+}
+
+/** 从 JWT 解析 user_id（兼容 sub / user_id 双命名；缺失 → null） */
+export function getJwtUserId(): string | null {
+  const token = getJwtToken()
+  const payload = parseJwtPayload(token)
+  if (!payload) return null
+  const uid = payload.user_id ?? payload.sub
+  return typeof uid === 'string' && uid.length > 0 ? uid : null
+}
+
+/**
+ * 从 JWT 解析展示名：优先 `name` claim，其次 user_id 截断，缺省「访客」。
+ */
+export function getJwtDisplayName(): string {
+  const token = getJwtToken()
+  const payload = parseJwtPayload(token)
+  if (payload && typeof payload.name === 'string' && payload.name.trim()) {
+    return payload.name.trim()
+  }
+  const uid = getJwtUserId()
+  if (uid) return uid.length > 12 ? `${uid.slice(0, 12)}…` : uid
+  return '访客'
+}

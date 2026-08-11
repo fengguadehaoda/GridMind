@@ -13,14 +13,26 @@
  *
  * 作者：寇豆码（工程师）
  */
-import { onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { Delete, FolderOpened, UploadFilled, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadFile } from 'element-plus'
 import { useKnowledgeUploadStore } from '@/stores/knowledgeUpload'
 import type { KbUploadItem, UploadResponse } from '@/types/knowledgeUpload'
+// M-5 T05 · AC3-3：上传/删除按钮仅 kb_admin/admin 显示（读列表全员保留）
+import { getJwtRole } from '@/composables/useJwtAuth'
 
 const store = useKnowledgeUploadStore()
+
+/**
+ * M-5 T05 · canManageKb = role ∈ {kb_admin, admin}。
+ * 控制上传区 + 删除列显隐；列表/检索/刷新全员保留（AC3-3）。
+ * 注：前端仅展示层 UX，安全由后端 require_role(KB_ADMIN, ADMIN) 兜底（403）。
+ */
+const canManageKb = computed<boolean>(() => {
+  const role = getJwtRole()
+  return role === 'kb_admin' || role === 'admin'
+})
 
 /** 允许的扩展名白名单（与后端 ALLOWED_EXT 对齐） */
 const ALLOWED_EXT = ['.txt', '.md', '.pdf']
@@ -110,8 +122,9 @@ onUnmounted(() => {
 
 <template>
   <div class="kb-upload" data-test="kb-upload">
-    <!-- ── 上传区 ── -->
+    <!-- ── 上传区（M-5 T05：仅 kb_admin/admin 可见；读列表全员保留）── -->
     <el-upload
+      v-if="canManageKb"
       class="kb-upload__picker"
       drag
       multiple
@@ -206,6 +219,7 @@ onUnmounted(() => {
         <el-table-column label="操作" width="90" align="center">
           <template #default="{ row }">
             <el-button
+              v-if="canManageKb"
               size="small"
               type="danger"
               text
@@ -215,6 +229,7 @@ onUnmounted(() => {
             >
               删除
             </el-button>
+            <span v-else class="kb-upload__readonly-hint" data-test="kb-upload-readonly">只读</span>
           </template>
         </el-table-column>
       </el-table>
@@ -328,5 +343,12 @@ onUnmounted(() => {
   .el-icon {
     color: var(--brand-primary);
   }
+}
+
+/* M-5 T05：非管理角色删除列只读提示 */
+.kb-upload__readonly-hint {
+  font-family: var(--font-cn);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
 }
 </style>

@@ -21,23 +21,58 @@
       />
     </div>
 
-    <!-- 回答内容 -->
-    <div class="answer-text">
-      <div v-html="renderedAnswer" />
+    <!-- M-4 图谱问答面板（graph_answer 存在时内嵌于 sources 区之前，US-1 不跳页） -->
+    <GraphQAPanel
+      v-if="answer.graph_answer"
+      :graph-answer="answer.graph_answer"
+      :fallback-paths="answer.graph_paths"
+      :sources="answer.sources || []"
+    />
+
+    <!-- M-3 来源引用卡片区（P0-3 卡片 / P1-1 多文档筛选 / P2-2 折叠记忆） -->
+    <div v-if="sources.length" class="sources-section">
+      <div
+        class="sources-header"
+        role="button"
+        tabindex="0"
+        @click="toggle"
+        @keydown.enter="toggle"
+      >
+        <span class="sources-title">
+          📄 来源引用（{{ sources.length }} 条 · {{ groups.length }} 个文档）
+        </span>
+        <el-icon class="collapse-arrow" :class="{ expanded: !collapsed }"><ArrowDown /></el-icon>
+      </div>
+      <DocFilterChips
+        v-if="!collapsed && groups.length >= 2"
+        v-model="activeDocId"
+        :groups="groups"
+        class="sources-filter"
+      />
+      <div v-if="!collapsed" class="sources-list">
+        <CitationCard
+          v-for="(source, i) in filteredSources"
+          :key="i"
+          :source="source"
+          :index="i"
+        />
+      </div>
     </div>
 
-    <el-collapse style="margin-top: 8px">
-      <!-- 引用来源 -->
-      <el-collapse-item v-if="answer.citations?.length" title="📄 引用来源" name="citations">
+    <!-- 旧 citations 纯文本回退（K-3：sources 空但有 citations） -->
+    <el-collapse v-else-if="answer.citations?.length" style="margin-top: 8px">
+      <el-collapse-item title="📄 引用来源" name="citations">
         <div v-for="(cite, i) in answer.citations" :key="i" class="citation-item">
           <PulseDot tone="info" :size="6" />
           <el-tag size="small" type="info" style="margin-right: 6px">[{{ i + 1 }}]</el-tag>
           <span class="citation-text">{{ cite }}</span>
         </div>
       </el-collapse-item>
+    </el-collapse>
 
-      <!-- 图谱路径 -->
-      <el-collapse-item v-if="answer.graph_paths?.length" title="🔗 图谱检索路径" name="graph">
+    <!-- 图谱路径 -->
+    <el-collapse v-if="answer.graph_paths?.length" style="margin-top: 8px">
+      <el-collapse-item title="🔗 图谱检索路径" name="graph">
         <div v-for="(path, i) in answer.graph_paths" :key="i" class="graph-path">
           <div class="path-label">路径 {{ i + 1 }}</div>
           <div class="path-nodes">
@@ -53,14 +88,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Reading, ArrowRight } from '@element-plus/icons-vue'
-import type { KnowledgeAnswer } from '../types'
+import { computed, ref } from 'vue'
+import { Reading, ArrowRight, ArrowDown } from '@element-plus/icons-vue'
+import type { KnowledgeAnswer, SourceRef } from '../types'
 import PulseDot from './background/PulseDot.vue'
-import { useReducedMotion } from '../composables/useReducedMotion'
+import {
+  filterSourcesByDoc,
+  groupSourcesByDoc,
+  useSourcesCollapse,
+} from '../composables/useKbSources'
+import CitationCard from './kb/CitationCard.vue'
+import DocFilterChips from './kb/DocFilterChips.vue'
+// M-4：图谱问答面板（answer.graph_answer 存在时渲染，位于 sources 区之前）
+import GraphQAPanel from './GraphQAPanel.vue'
 
 const props = defineProps<{ answer: KnowledgeAnswer }>()
-const prefersReducedMotion = useReducedMotion()
 
 const confidenceTag = computed(() => {
   const c = props.answer.confidence
@@ -69,13 +111,14 @@ const confidenceTag = computed(() => {
   return 'danger'
 })
 
-const renderedAnswer = computed(() => {
-  if (!props.answer.answer) return ''
-  return props.answer.answer
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>')
-})
+// ── M-3 来源引用（K-3 渲染优先级：sources → citations → 不渲染）──
+const sources = computed<SourceRef[]>(() => props.answer.sources || [])
+const groups = computed(() => groupSourcesByDoc(sources.value))
+// 引用区默认折叠 + localStorage 记忆（P2-2）
+const { collapsed, toggle } = useSourcesCollapse()
+// 文档筛选（纯前端，P1-1）；组件随消息重挂载，无需跨消息复位
+const activeDocId = ref<string | null>(null)
+const filteredSources = computed(() => filterSourcesByDoc(sources.value, activeDocId.value))
 </script>
 
 <style scoped>
@@ -134,14 +177,53 @@ const renderedAnswer = computed(() => {
   margin-bottom: var(--space-2);
 }
 
-.answer-text {
-  font-family: var(--font-body);
-  font-size: var(--fs-md);
-  line-height: var(--lh-loose);
-  color: var(--text-primary);
-  padding: var(--space-2) 0;
+/* ── M-3 来源引用卡片区 ── */
+.sources-section {
+  margin-top: var(--space-1);
 }
 
+.sources-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  transition: var(--theme-transition);
+  user-select: none;
+}
+
+.sources-header:hover {
+  border-color: var(--brand-primary);
+}
+
+.sources-title {
+  font-family: var(--font-cn);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--text-secondary);
+}
+
+.collapse-arrow {
+  color: var(--text-muted);
+  transition: transform var(--dur-fast, 0.2s) var(--ease-out-quint, ease-out);
+}
+
+.collapse-arrow.expanded {
+  transform: rotate(180deg);
+}
+
+.sources-filter {
+  margin-top: var(--space-1);
+}
+
+.sources-list {
+  margin-top: var(--space-1);
+}
+
+/* ── 旧 citations 纯文本回退 ── */
 .citation-item {
   display: flex;
   align-items: flex-start;

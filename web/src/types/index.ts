@@ -199,12 +199,57 @@ export interface ModelsResponse {
   available: ModelInfo[]
   current: string
   default: string
+  /** V1.7.0 M-2：请求携带 ?thread_id= 时回显该会话（无则缺省） */
+  thread_id?: string | null
 }
 
 /** /models/switch 端点响应 */
 export interface ModelSwitchResponse {
   ok: boolean
   current: string
+  /** V1.7.0 M-2：请求携带 thread_id 时回显该会话（向后兼容可选） */
+  thread_id?: string | null
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * M-5 会话管理类型（T02 · 逐字段与后端 Pydantic / threads 列对齐）
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** M-5 角色（与后端 api.services.rbac.Role 5 枚举一致） */
+export type Role = 'dispatcher' | 'operator' | 'kb_admin' | 'auditor' | 'admin'
+
+/**
+ * M-5 会话摘要（``GET /sessions`` 列表项）。
+ *
+ * ``archived`` 为 **int**（0=活跃 1=归档 2=删除软删），与后端 threads 列一致
+ * （主理人决策 Q1 + 架构 §八 待明确 6；前端不做布尔转换）。
+ */
+export interface SessionSummary {
+  thread_id: string
+  title: string
+  model_id: string | null
+  created_at: string | null
+  updated_at: string | null
+  archived: 0 | 1 | 2
+}
+
+/** ``GET /sessions`` 响应 */
+export interface SessionsResponse {
+  sessions: SessionSummary[]
+  total: number
+}
+
+/** ``PATCH /sessions/{thread_id}`` 重命名请求体 */
+export interface SessionRenameRequest {
+  title: string
+}
+
+/** 归档 / 恢复 / 删除写端点响应 */
+export interface SessionActionResponse {
+  ok: boolean
+  thread_id: string
+  archived: 0 | 1 | 2
+  title?: string | null
 }
 
 /** HITL 审计决策类型 */
@@ -287,6 +332,8 @@ export interface ChatResponse {
   interrupt_msg?: string | null
   // Bug2 修复：演示模式剧本外响应标记（前端据此清审批态 + 展示提示）
   is_demo_out_of_scope?: boolean
+  // M-3 新增：知识库 Agent 轮次的结构化回答（含 sources）；其他 Agent 无此键（K-6）
+  knowledge_answer?: KnowledgeAnswer | null
 }
 
 /** SSE 事件数据
@@ -340,6 +387,8 @@ export interface SseEvent {
   new_steps?: ReasoningStep[]
   decision?: 'approved' | 'rejected' | 'edit_approved'
   resolved_at?: string
+  // M-3 新增：done 事件携带 knowledge_agent 轮次的结构化回答（K-6，可选）
+  knowledge_answer?: KnowledgeAnswer | null
 }
 
 /** 设备信息 */
@@ -446,14 +495,133 @@ export interface GraphEntity {
   properties: Record<string, unknown>
 }
 
+/** M-3 结构化来源引用（字段名与后端 Pydantic SourceRef 完全一致，snake_case，K-1） */
+export interface SourceRef {
+  /** SQLite knowledge_chunks 自增 id；feature-intro 分片无独立 id → null */
+  chunk_id?: number | null
+  /** 文档 id；空 → 前端 (未知文档) */
+  doc_id?: string
+  /** 原始文件名（meta.filename 或 source 反解） */
+  filename?: string
+  /** 文档标题 */
+  title?: string
+  /** 原始 source 字段（user-upload/主变运行规程.md） */
+  source?: string
+  /** 章节（meta.section / md 章节）；无 → null */
+  section?: string | null
+  /** 真实检索分数 0-1；null → 不显示匹配度标签 */
+  score?: number | null
+  /** ≤120 字摘要（去《标题》前缀后截断） */
+  snippet?: string
+  /** ≥200 字原文摘录（点开看原文用） */
+  content_excerpt?: string
+  /** 该 chunk 在文档内序号；缺失 → null */
+  chunk_index?: number | null
+  /** 该文档总 chunk 数；缺失 → null */
+  total_chunks?: number | null
+}
+
 /** 知识库回答 */
 export interface KnowledgeAnswer {
   answer: string
   citations: string[]
+  /** M-3 新增：结构化来源（按 score 降序）；旧后端无此字段（可选） */
+  sources?: SourceRef[]
   graph_paths: string[][]
   confidence: number
   refuse: boolean
   refuse_reason?: string | null
+  /** M-4 新增：图谱问答答案（可选，向后兼容——旧后端无此键时前端行为与 M-3 一致） */
+  graph_answer?: GraphAnswer | null
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * M-4 图谱问答类型（T01 · 逐字段 snake_case 镜像后端 Pydantic，K-1）
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** M-4 图谱问答节点 */
+export interface GraphAnswerNode {
+  id: string
+  name: string
+  /** 设备/故障/处置/规程/部件/… */
+  type: string
+  properties: Record<string, unknown>
+  /** 距 seed 最短跳数（seed=0）；未知 → null */
+  hop?: number | null
+  /** 关联文档 id（实体→来源映射） */
+  doc_ids?: string[]
+  /** seed=1.0；其余 max(0, 1 - 0.15*hop) */
+  confidence?: number | null
+}
+
+/** M-4 图谱问答边 */
+export interface GraphAnswerEdge {
+  source: string
+  target: string
+  /** 触发/导致/包含/关联/处置/CAUSES/… */
+  relation_type: string
+  /** min(端点节点置信度) */
+  confidence?: number | null
+  /** 推理规则来源；本批恒为 null（规则推导边不启用，决策 3） */
+  rule_id?: string | null
+}
+
+/** M-4 图谱推理路径 */
+export interface GraphPath {
+  /** 节点 id 有序序列 */
+  nodes: string[]
+  /** 关系类型序列（len = nodes - 1） */
+  relations: string[]
+  hops: number
+  /** max(0, 1 - 0.15*hops) */
+  confidence: number
+}
+
+/** M-4 图谱问答答案 */
+export interface GraphAnswer {
+  nodes: GraphAnswerNode[]
+  edges: GraphAnswerEdge[]
+  paths: GraphPath[]
+  seed_ids: string[]
+  /** 路径置信度按 1/(hops+1) 加权平均 */
+  confidence: number
+  /** "neo4j" | "networkx" */
+  backend: string
+  /** True = 降级后端/部分数据（networkx 为常态降级，仅弱提示） */
+  degraded: boolean
+  latency_ms: number
+  /** 与 KnowledgeAnswer.sources 同源/子集（US-5） */
+  sources?: SourceRef[]
+}
+
+/** ForceGraphView 通用节点输入（调用方算好颜色/大小/载荷，组件不感知业务语义） */
+export interface ForceGraphNodeInput {
+  id: string
+  name: string
+  /** 直径 px（负载/类型权重由调用方计算） */
+  symbolSize: number
+  /** 填充色（tokens，调用方算好） */
+  color: string
+  borderColor?: string
+  borderWidth?: number
+  shadowBlur?: number
+  shadowColor?: string
+  /** 图例分类（可选） */
+  category?: string
+  /** 透传给 tooltipFormatter/click 的业务载荷 */
+  raw?: Record<string, unknown> | null
+}
+
+/** ForceGraphView 通用边输入 */
+export interface ForceGraphEdgeInput {
+  source: string
+  target: string
+  /** 边标签（如 relation_type） */
+  label?: string
+  color?: string
+  width?: number
+  curveness?: number
+  opacity?: number
 }
 
 /** 线程信息 */

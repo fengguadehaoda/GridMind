@@ -17,6 +17,11 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 # 加载 .env（如有）
 load_dotenv(ROOT_DIR / ".env")
 
+# ── 应用版本（唯一版本常量，A1 遗留修复）────────────────────
+# 前后端统一从这里读取；当前代码基线 v1.7.0。
+# 升级版本时同步更新：web/package.json / web/package-lock.json / RELEASE-NOTES.md。
+APP_VERSION: str = "1.7.0"
+
 
 class Settings(BaseSettings):
     # ── 服务 ────────────────────────────────────────────
@@ -117,6 +122,15 @@ class Settings(BaseSettings):
             return True
         return os.getenv("PRODUCTION", "0").strip().lower() in ("1", "true", "yes")
 
+    # ── V1.7.0 多用户地基（M-1 / M-2）──────────────
+    # 未知 thread 严格拒绝开关（PRD Q2 默认：backfill + 懒登记，默认 False）：
+    # - False（默认）：threads 表无记录但 checkpoint 存在 → 首个已认证访问者
+    #   懒登记接管（保证 v1.6 存量数据可访问、不丢历史）；
+    # - True：未知 thread 一律 404（生产部署如要求「未知 thread 一律拒绝」再开启）。
+    threads_strict_mode: bool = os.getenv(
+        "THREADS_STRICT_MODE", "false"
+    ).lower() in ("1", "true", "yes")
+
     # ── M3a 推理能力增强配置（新增）─────────────────────
     # 1. Cypher 模板注册中心开关（默认 True —— M3a 启动即生效）
     template_registry_enabled: bool = os.getenv(
@@ -148,6 +162,12 @@ class Settings(BaseSettings):
     dingtalk_cooldown_s: int = int(os.getenv("DINGTALK_COOLDOWN_S", "300"))
     # 6. 灰度面板前端开关（默认 True —— M3c 启用即可见）
     grayscale_panel_enabled: bool = os.getenv("GRAYSCALE_PANEL_ENABLED", "true").lower() == "true"
+
+    # ── M-3 知识库来源引用链配置（新增）──────────────────
+    # score 统一归一化 0-1（K-2）；citation_min_score 与拒答阈值（0.25）对齐，
+    # 低于该值的来源不下发；citation_top_n 限制单轮最多下发的结构化来源条数。
+    citation_min_score: float = float(os.getenv("CITATION_MIN_SCORE", "0.25"))
+    citation_top_n: int = int(os.getenv("CITATION_TOP_N", "5"))
 
     model_config = {"frozen": True}  # 不可变配置
 

@@ -11,7 +11,7 @@
       data-testid="hitl-dialog"
       @focus-trap-escape="handleEscapeClose"
     >
-      <!-- 背景遮罩（决策 7.5：z-index 99 < 弹窗 100 < toast 1000） -->
+      <!-- 背景遮罩（决策 7.5：遮罩 < 弹窗 1000 < toast 2000） -->
       <div
         class="hitl-dialog-backdrop"
         aria-hidden="true"
@@ -243,8 +243,8 @@
  *
  * 改造要点（架构 §3.4 + §6.4 + 主理人决策 7.5）：
  *   - 替换 el-dialog → 自定义 div（class="hitl-dialog-container"）保留 props 接口
- *   - sticky 定位：position: fixed; top: 80px; z-index: 100（toast 1000 > 弹窗 100）
- *   - backdrop blur 遮罩：z-index 99 < 弹窗 100
+ *   - sticky 定位：position: fixed; top: 80px; z-index: var(--z-dialog)（弹窗 1000 < toast 2000）
+ *   - backdrop blur 遮罩：z-index < 弹窗 1000
  *   - focus trap：T01 useFocusTrap composable，4 按钮循环 + Esc 关闭 + 焦点回收
  *   - 二次确认：× 关闭 / 点遮罩 / Esc 键 三种交互统一弹 ElMessageBox "稍后处理"
  *   - a11y：role="dialog" + aria-modal + aria-labelledby + aria-describedby
@@ -546,15 +546,15 @@ defineExpose({
 /* ═══════════════════════════════════════════════════════════════
  * T05 弹窗前置 · 容器 + 遮罩 + 内容区 + 进场动画
  *
- * 关键决策（主理人 7.5）：弹窗 z-index = 100；toast 1000 > 弹窗 100
- * 背景遮罩 = 99（不阻挡 toast 1000；toast 显示时可见）
+ * 关键决策（主理人 7.5）：弹窗 z-index = var(--z-dialog)；toast 2000 > 弹窗 1000
+ * 背景遮罩 < 弹窗（不阻挡 toast 2000；toast 显示时可见）
  * ═══════════════════════════════════════════════════════════════ */
 
 /* 弹窗容器（fixed 定位，遮罩 + 内容绝对布局） */
 .hitl-dialog-container {
   position: fixed;
   inset: 0;
-  z-index: 100; /* 决策 7.5：弹窗 100 < toast 1000 */
+  z-index: var(--z-dialog); /* 决策 7.5：弹窗 1000 < toast 2000 */
   pointer-events: auto;
   outline: none; /* 防止 focus trap focus 时浏览器默认 outline 干扰 */
 }
@@ -586,7 +586,7 @@ defineExpose({
   border-radius: var(--radius-md, 8px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
   overflow: hidden;
-  z-index: 2;
+  z-index: var(--z-dialog);
 }
 
 /* ── Header ────────────────────────────────────────────── */

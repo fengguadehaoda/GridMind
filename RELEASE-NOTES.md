@@ -1,5 +1,89 @@
 # GridMind · 灵枢电网 Release Notes
 
+## v1.7.0（2026-08-11）— 代码基线 v1.7.0
+
+**主题**：多用户 / 知识库 / 会话管理完整迭代（M-1 ~ M-5 + 启动脚本加固 + 遗留清理）
+
+> 覆盖 v1.5.0 / v1.5.1 / v1.6.0 / v1.7.0 四个小版本累计交付。此前最新公开版本为
+> v1.4.0（2026-08-04），本段补齐 M-1 ~ M-5 全部落地内容。
+
+---
+
+### 🌟 核心新功能
+
+#### M-1 · 多用户隔离 + RBAC 五角色
+- 用户认证（JWT）与数据所有权隔离：每个用户的会话 / 知识库 / 图谱问答按 owner 隔离
+- RBAC 五角色：`admin` / `operator` / `analyst` / `viewer` / `auditor`，端点级权限矩阵
+- 服务层：`api/services/rbac.py`（权限校验）+ `api/services/auth.py`（JWT 签发/校验）
+- 前端角色感知 UI（UserBadge / 菜单按角色过滤），`web/src/data/navItems.ts`
+
+#### M-2 · per-session 模型 + 会话管理
+- 会话级模型记忆：每个 thread 独立记录模型选择（`api/services/thread_store.py`），
+  切换会话不串模型；`GET/POST /models` 支持 `threadId` 参数
+- 会话管理 API：`GET/PATCH/DELETE /sessions*`（列表 / 重命名 / 归档 / 恢复 / 软删）
+- 前端会话侧栏 `SessionSidebar.vue` + 会话导出（JSON）
+
+#### M-3 · 知识库来源引用链
+- RAG 来源结构化引用：`SourceRef` 11 字段（chunk_id/doc_id/filename/title/source/
+  section/score/snippet/content_excerpt/chunk_index/total_chunks）
+- score 归一化 0-1 + `citation_min_score=0.25` 拒答过滤 + `citation_top_n=5` 下发上限
+- 前端引用卡片（RagPanel）+ `useKbSources` 纯逻辑（21 项单测）
+
+#### M-4 · 图谱问答（KG QA）
+- `core/kg_qa.py`：GraphQAEngine —— 实体识别 → 图谱检索 → 多跳路径 → 边重建 →
+  自然语言回答组装（NetworkX 内存图默认路径，Neo4j 启用即复用）
+- `GET /api/kg-qa/ask`（或等价端点）+ 前端 `GraphQAPanel.vue` / ForceGraphView
+- 来源引用链与图谱回答共存的对话融合（knowledge_answer + citations 并行下发）
+
+#### M-5 · 大屏接口预留 + 会话管理收尾 + 启动脚本加固
+- 大屏模式扩展点：`BigScreenPlaceholder.vue` + 路由预留（`isBigScreen` 计算属性）
+- 会话懒登记语义（Q6）：新建会话不产生后端空行，首轮发送后 threads 表登记
+- 启动脚本加固：`scripts/start_all.py` / `scripts/start_mcp_only.py` 健壮性修复
+  （MCP 未启动时降级提示、进程清理、端口检测）
+
+---
+
+### 🛠️ 工程改进
+
+- **测试**：多用户 ownership 矩阵 / RBAC 矩阵 / session API / thread_store /
+  KG QA 引擎与 e2e / 来源引用链 / HITL schema 同步 等新测试
+- **文档**：`docs/multiuser-*`、`docs/session-mgmt-*`、`docs/kb-citation-*`、
+  `docs/kg-qa-*`（PRD + 架构 + 类图 + 时序图）
+- **版本统一**（遗留 A1）：`api/config.py::APP_VERSION` 为唯一版本常量（1.7.0），
+  `api/main.py` 根端点与 FastAPI 元数据读取该常量；`web/package.json` 同步 1.7.0
+- **N+1 优化说明**（遗留 A3）：`core/kg_qa.py::_assemble_edges` NetworkX 内存图
+  补边无感；Neo4j 启用时建议批量获取关系（见代码注释）
+
+---
+
+### 📊 基线
+
+| 维度 | 数据 |
+|------|------|
+| **测试** | 743 passed / 18 skipped（M-5 后基线） |
+| **API 版本** | v1.7.0（`GET /` 返回真实版本） |
+| **RBAC 角色** | 5 个（admin / operator / analyst / viewer / auditor） |
+
+---
+
+### ⚠️ 已知事项（不阻塞）
+
+1. **M-5 会话懒登记侧栏刷新**：新会话首轮发送成功后本地 upsert 进侧栏（P2 增强已做），
+   跨端（多标签页）刷新仍以 `fetchSessions` 为准
+2. **Neo4j 沙箱未启用**：图谱问答默认 NetworkX 内存图路径，Neo4j 启用时自动复用
+
+---
+
+### 👥 贡献者
+
+- **齐活林（Qi）** · 交付总监 — 主理人 / SOP 编排
+- **许清楚（Xu）** · 产品经理 — PRD / 文档
+- **高见远（Gao）** · 架构师 — 系统设计 + 任务分解
+- **寇豆码（Kou）** · 工程师 — 代码实现
+- **严过关（Yan）** · QA 工程师 — 测试验证
+
+---
+
 ## v1.4.0（2026-08-04）
 
 **主题**：可解释性 AI + 知识图谱完整闭环

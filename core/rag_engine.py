@@ -26,7 +26,7 @@ from typing import Any
 from loguru import logger
 
 from api.config import settings
-from api.schemas import GraphEntity, KnowledgeAnswer, RetrievalResult
+from api.schemas import GraphEntity, KnowledgeAnswer, RetrievalResult, SourceRef
 from core.knowledge_graph import KnowledgeGraph
 from core.metrics_collector import (
     get_metrics_collector,
@@ -46,6 +46,49 @@ ENTITY_PATTERNS = [
 
 # 故障关键词（用于触发 get_fault_chain）
 FAULT_KEYWORDS = ("过载", "故障", "异常", "跳闸", "报警")
+
+# 特殊设备名 → 实体 ID 兜底映射（M0 保留，M-4 公开 util 复用）
+_DEVICE_ID_MAP: dict[str, str] = {
+    "一号主变": "e-TR001",
+    "二号主变": "e-TR002",
+    "35kv母线": "e-BB002",
+    "10kv母线": "e-BB001",
+}
+
+
+def extract_entity_ids(text: str, knowledge_graph: Any | None = None) -> list[str]:
+    """从文本中提取图谱实体 ID（M-4 P0-1 公开 util）。
+
+    由原 ``RagEngine._extract_entity_ids`` 逻辑提升为模块级函数，供
+    ``RagEngine``（委托）与 ``GraphQAEngine``（core/kg_qa.py）复用，保证
+    检索与图谱问答的 seed 同源（US-1「同源」）。
+
+    Args:
+        text: 待抽取文本（用户问题 + 检索上下文拼接）。
+        knowledge_graph: ``KnowledgeGraph`` 实例（模糊搜索用）；None 时
+            懒加载默认图（兼容 RagEngine 传入自身图）。
+
+    Returns:
+        去重后的实体 ID 列表（正则 ENTITY_PATTERNS + device_map 兜底）。
+    """
+    if knowledge_graph is None:
+        from core.knowledge_graph import KnowledgeGraph
+        knowledge_graph = KnowledgeGraph()
+
+    found_ids: list[str] = []
+    for pattern in ENTITY_PATTERNS:
+        for m in re.finditer(pattern, text):
+            keyword = m.group(1).strip()
+            entities = knowledge_graph.search_entities(keyword)
+            for e in entities:
+                if e.id not in found_ids:
+                    found_ids.append(e.id)
+    # 对特殊设备名直接匹配
+    lowered = (text or "").lower()
+    for alias, eid in _DEVICE_ID_MAP.items():
+        if alias in lowered and eid not in found_ids:
+            found_ids.append(eid)
+    return found_ids
 
 
 class RagEngine:
@@ -132,11 +175,26 @@ class RagEngine:
                 if fi_text:
                     # 把 chunks 注入 vector_chunks，让下游 answer() 的
                     # _build_context + _generate 走同一条拼接链路。
+                    # M-3：feature-intro 通道纳入 sources（主理人已拍板）。
+                    fi_sources = [
+                        self._make_source_ref({
+                            "content": c.get("content") or "",
+                            "metadata": {
+                                "doc_id": c.get("doc_id") or "",
+                                "title": c.get("title") or "",
+                                "section": c.get("section") or None,
+                            },
+                            "score": c.get("score"),
+                        })
+                        for c in fi_chunks
+                        if (c.get("content") or "").strip()
+                    ]
                     return RetrievalResult(
                         vector_chunks=fi_text,
                         graph_entities=[],
                         graph_paths=[],
                         confidence=0.95,
+                        sources=fi_sources,
                     )
             except Exception as exc:  # noqa: BLE001 — 降级到通用 RAG（不抛错）
                 logger.warning(
@@ -146,6 +204,8 @@ class RagEngine:
         # Step 1: 向量检索（业务查询，不召回 feature-intro 命名空间避免 RAG 反向污染）
         vec_results = self.vector_store.search(query, top_k=top_k, exclude_tags=["feature-intro"])
         vector_chunks = [r["content"] for r in vec_results]
+        # M-3：从向量结果构建结构化 sources（与 vector_chunks 并行，K-3）
+        sources = [self._make_source_ref(r) for r in vec_results]
 
         # Step 2: 从向量结果中提取实体（保留 M0 正则 + device_map 兜底）
         all_text = " ".join(vector_chunks) + " " + query
@@ -229,6 +289,9 @@ class RagEngine:
             graph_entities=graph_entities,
             graph_paths=graph_paths,
             confidence=self._calc_confidence(vector_chunks, graph_entities),
+            sources=sources,
+            # M-4：本轮实体抽取的 seed（图谱问答组装用，保证与检索同源）
+            seed_ids=seed_ids,
         )
 
     def answer(
@@ -237,7 +300,12 @@ class RagEngine:
         top_k: int = 3,
         thread_id: str = "default",
     ) -> KnowledgeAnswer:
-        """检索 + 生成完整链路。"""
+        """检索 + 生成完整链路。
+
+        M-3 增量：``KnowledgeAnswer.sources`` 由 ``retrieve()`` 的 sources 经
+        ``citation_min_score`` 过滤 + ``citation_top_n`` 截断 + score 降序后写入
+        （K-2）；``citations`` 仍为全部 vector_chunks 副本（K-3 并行构建）。
+        """
         result = self.retrieve(query, top_k=top_k, thread_id=thread_id)
 
         # 低置信度拒答
@@ -251,19 +319,39 @@ class RagEngine:
                 refuse_reason="检索结果置信度过低（{:.0f}%），无法生成可靠答案，建议转人工处理".format(
                     result.confidence * 100
                 ),
+                sources=[],
             )
 
         # 构建 LLM 上下文
         context = self._build_context(result)
         answer_text = self._generate(query, context)
 
-        return KnowledgeAnswer(
+        answer = KnowledgeAnswer(
             answer=answer_text,
             citations=result.vector_chunks.copy(),
             graph_paths=result.graph_paths.copy(),
             confidence=result.confidence,
             refuse=False,
+            sources=self._filter_sources(result.sources),
         )
+
+        # M-4：图谱问答组装（P0-4）——懒加载防循环；异常不阻断 RAG；
+        # seed 为空或组装结果全空 → 不 attach（graph_answer=None，M-3 行为不变）。
+        if result.seed_ids:
+            try:
+                from core.kg_qa import get_graph_qa_engine  # 懒加载防循环
+                ga = get_graph_qa_engine().build(
+                    query=query,
+                    seed_ids=result.seed_ids,
+                    sources=answer.sources,
+                    hops=3,
+                )
+                if ga.nodes or ga.edges or ga.paths:
+                    answer.graph_answer = ga
+            except Exception as exc:  # noqa: BLE001 — 图谱组装故障不阻断 RAG
+                logger.debug("graph_answer assembly skipped: {}", exc)
+
+        return answer
 
     # ── M2 扩展方法 ─────────────────────────────────────────
 
@@ -411,26 +499,8 @@ class RagEngine:
     # ── 内部方法 ────────────────────────────────────────
 
     def _extract_entity_ids(self, text: str) -> list[str]:
-        """从文本中提取图谱实体 ID。"""
-        found_ids: list[str] = []
-        for pattern in ENTITY_PATTERNS:
-            for m in re.finditer(pattern, text):
-                keyword = m.group(1).strip()
-                entities = self.knowledge_graph.search_entities(keyword)
-                for e in entities:
-                    if e.id not in found_ids:
-                        found_ids.append(e.id)
-        # 对特殊设备名直接匹配
-        device_map = {
-            "一号主变": "e-TR001",
-            "二号主变": "e-TR002",
-            "35kv母线": "e-BB002",
-            "10kv母线": "e-BB001",
-        }
-        for alias, eid in device_map.items():
-            if alias in text.lower() and eid not in found_ids:
-                found_ids.append(eid)
-        return found_ids
+        """从文本中提取图谱实体 ID（M-4 起委托模块级公开 util，行为不变）。"""
+        return extract_entity_ids(text, self.knowledge_graph)
 
     @staticmethod
     def _calc_confidence(
@@ -445,6 +515,112 @@ class RagEngine:
         if vector_chunks and graph_entities:
             score += 0.2
         return min(1.0, score)
+
+    # ── M-3：来源引用构建 helper（K-1/K-2/K-9）────────────
+
+    @staticmethod
+    def _strip_title_prefix(content: str, title: str | None = None) -> str:
+        """去除 chunk 内容开头的《标题》前缀（K-9）。
+
+        user-upload 分片形如 ``《主变运行规程》\\n\\n正文...``；feature-intro
+        分片无前缀。去前缀后用于 snippet / content_excerpt，避免引用卡片
+        重复显示文档名。
+        """
+        text = (content or "").strip()
+        if not title:
+            return text
+        prefix = f"《{title}》"
+        if text.startswith(prefix):
+            return text[len(prefix):].strip()
+        return text
+
+    @staticmethod
+    def _make_excerpt(text: str, max_len: int) -> str:
+        """截断为最多 ``max_len`` 字符的摘要；超长追加 ``…``（K-9）。"""
+        text = (text or "").strip().replace("\n", " ")
+        if len(text) <= max_len:
+            return text
+        return text[:max_len].rstrip() + "…"
+
+    @staticmethod
+    def _sort_sources(sources: list[SourceRef]) -> list[SourceRef]:
+        """按 score 降序（score 为 None 排最后），稳定排序。"""
+        return sorted(
+            sources,
+            key=lambda s: (s.score is None, -(s.score if s.score is not None else 0.0)),
+        )
+
+    def _filter_sources(self, sources: list[SourceRef]) -> list[SourceRef]:
+        """``citation_min_score`` 过滤 + ``citation_top_n`` 截断（K-2）。
+
+        规则：
+        - ``score is None`` 的来源**保留**——前端按 K-5 降级展示「未提供匹配度」，
+          避免 feature-intro 等无 score 数据被误杀；
+        - ``score < citation_min_score`` 剔除；
+        - 过滤后按 score 降序并截断 top_n。
+        """
+        min_score = float(getattr(settings, "citation_min_score", 0.25))
+        top_n = int(getattr(settings, "citation_top_n", 5))
+        filtered = [
+            s for s in sources
+            if s.score is None or s.score >= min_score
+        ]
+        return self._sort_sources(filtered)[:top_n]
+
+    def _make_source_ref(self, vec_result: dict[str, Any]) -> SourceRef:
+        """从 ``VectorStore.search()`` 返回项构建 :class:`SourceRef`。
+
+        元数据来源：``metadata``（doc_id/title/source/chunk_id/filename/
+        chunk_index/total_chunks/section）+ ``content`` + ``score``。文件名
+        缺省时从 ``source``（形如 ``user-upload/<原名>``）反解；score 越界
+        clamp 到 [0, 1]（K-2）。所有缺失字段降级为 None，绝不抛错。
+        """
+        meta = vec_result.get("metadata") or {}
+        content = str(vec_result.get("content") or "").strip()
+        score_raw = vec_result.get("score")
+        score: float | None = None
+        if score_raw is not None:
+            try:
+                score = round(min(1.0, max(0.0, float(score_raw))), 3)
+            except (TypeError, ValueError):
+                score = None
+
+        title = str(meta.get("title") or "").strip()
+        content_body = self._strip_title_prefix(content, title)
+        source_raw = str(meta.get("source") or "").strip()
+        filename = str(meta.get("filename") or "").strip() or self._filename_from_source(source_raw)
+
+        return SourceRef(
+            chunk_id=self._as_int_or_none(meta.get("chunk_id")),
+            doc_id=str(meta.get("doc_id") or "").strip() or None,
+            filename=filename or None,
+            title=title or None,
+            source=source_raw or None,
+            section=str(meta.get("section") or "").strip() or None,
+            score=score,
+            snippet=self._make_excerpt(content_body, 120),
+            content_excerpt=content_body or content,
+            chunk_index=self._as_int_or_none(meta.get("chunk_index")),
+            total_chunks=self._as_int_or_none(meta.get("total_chunks")),
+        )
+
+    @staticmethod
+    def _filename_from_source(source: str) -> str:
+        """从 ``source``（``user-upload/<原始文件名>``）反解原始文件名。"""
+        raw = (source or "").strip()
+        if "/" in raw:
+            return raw.split("/", 1)[-1]
+        return raw
+
+    @staticmethod
+    def _as_int_or_none(value: Any) -> int | None:
+        """安全转 int；None / 非法值返回 None（缺失字段降级语义）。"""
+        if value is None or value == "":
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _build_context(result: RetrievalResult) -> str:

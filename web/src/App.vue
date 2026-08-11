@@ -17,7 +17,8 @@
         <LogoHorizontal :size="36" />
       </router-link>
 
-      <!-- ② 中：水平导航（standard/large 显示；compact 折叠为汉堡 NavDrawer） -->
+      <!-- ② 中：水平导航（standard/large 显示；compact 折叠为汉堡 NavDrawer）
+           M-5 T05：数据驱动 + roles 过滤（visibleNavItems） -->
       <nav v-if="!isCompact" class="app-nav-wrap" data-test="header-nav">
         <el-menu
           class="app-nav"
@@ -26,33 +27,24 @@
           :default-active="route.path"
           :ellipsis="true"
         >
-          <el-menu-item index="/">
-            <el-icon><ChatDotRound /></el-icon>
-            智能对话
-          </el-menu-item>
-          <el-menu-item index="/monitor">
-            <el-icon><Monitor /></el-icon>
-            实时监控
-          </el-menu-item>
-          <el-menu-item index="/grayscale">
-            <el-icon><Histogram /></el-icon>
-            灰度面板
-          </el-menu-item>
-          <el-menu-item index="/audit">
-            <el-icon><Document /></el-icon>
-            HITL 审计
-          </el-menu-item>
-          <el-menu-item index="/system">
-            <el-icon><DataBoard /></el-icon>
-            系统总览
+          <el-menu-item
+            v-for="item in visibleNavItems"
+            :key="item.path"
+            :index="item.path"
+          >
+            <el-icon><component :is="item.icon" /></el-icon>
+            {{ item.label }}
           </el-menu-item>
         </el-menu>
       </nav>
-      <!-- compact：汉堡导航抽屉 -->
+      <!-- compact：汉堡导航抽屉（内部同样按 roles 过滤） -->
       <NavDrawer v-if="isCompact" v-model="navOpen" />
 
-      <!-- 右侧：④帮助图标 ③「菜单」按钮 ⑤「更多」折叠点（移动端） -->
+      <!-- 右侧：④帮助图标 ③「菜单」按钮 ⑤「更多」折叠点（移动端）+ M-5 用户徽标 -->
       <div class="header-right">
+        <!-- M-5 T05 · AC3-1：用户名 + 角色徽标（Header 右侧） -->
+        <UserBadge />
+
         <!-- ④ 帮助图标 -->
         <el-tooltip content="帮助中心" placement="bottom" :show-after="200">
           <button
@@ -146,11 +138,6 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ChatDotRound,
-  Monitor,
-  Histogram,
-  Document,
-  DataBoard,
   Back,
   QuestionFilled,
   Menu as MenuIcon,
@@ -162,6 +149,10 @@ import { useAuditStore } from './stores/audit'
 import { healthCheck } from './api/chat'
 import { useViewport } from './composables/useViewport'
 import { useStatusCard } from './composables/useStatusCard'
+// M-5 T05：主导航数据源 + 角色解析 + 用户徽标
+import { visibleNavItems as filterNavItems } from './data/navItems'
+import { getJwtRole } from './composables/useJwtAuth'
+import UserBadge from './components/controls/UserBadge.vue'
 // v1.5.1 T05 · F4 HITL 弹窗已从 App.vue 移至 ChatView.vue（架构 §3.4 + §5 T05）
 import LogoHorizontal from './components/brand/LogoHorizontal.vue'
 import CommandPalette from './components/controls/CommandPalette.vue'
@@ -180,6 +171,15 @@ const auditStore = useAuditStore()
 const displayStore = useDisplayStore()
 const route = useRoute()
 const router = useRouter()
+
+// V1.7.0 F-1：大屏模式扩展点——仅暴露计算属性（isBigScreen），
+// 本批不接入任何大屏布局逻辑；后续大屏 UI 在此读取。
+const isBigScreen = computed(() => displayStore.isBigScreen)
+
+// M-5 T05 · AC3-2：当前角色（base64url 解析 JWT role，缺省 dispatcher）
+const currentRole = computed(() => getJwtRole())
+/** 按角色过滤后的可见导航项（Header + NavDrawer 共享规则） */
+const visibleNavItems = computed(() => filterNavItems(currentRole.value))
 
 // v1.6.0 P1-5：三档断点（large ≥1920 / standard 1280-1920 / compact ≤1279.98）
 // header-redesign T04：isMobile <768px（「更多」折叠点 fallback）

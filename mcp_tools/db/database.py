@@ -151,6 +151,47 @@ def _ensure_knowledge_chunks_columns(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_threads_columns(conn: sqlite3.Connection) -> None:
+    """为 threads 表补齐 M-5 会话管理所需 archived/deleted_at 列（幂等迁移）。
+
+    新增列（架构 session-mgmt §3.1 + 主理人决策 Q1/Q2）：
+    - ``archived``   INTEGER NOT NULL DEFAULT 0 — 0=活跃 1=归档 2=删除（软删）
+    - ``deleted_at`` TEXT                      — 软删时间戳（UTC ISO 串）；NULL=未删
+
+    幂等实现：先 ``PRAGMA table_info`` 查已有列，仅 ALTER 缺失列；
+    SQLite ``ALTER TABLE ADD COLUMN`` 重复执行会抛 "duplicate column name"，
+    存量库升级时必须走这条 PRAGMA 路径，否则启动失败（沿用既有迁移模式）。
+
+    同时补建侧栏查询索引 ``idx_threads_owner_archived_updated``（CREATE INDEX
+    IF NOT EXISTS 自身幂等），加速 ``GET /sessions`` 的 owner + 状态 + 时间查询。
+    """
+    existing = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(threads)").fetchall()
+    }
+    migrations: list[tuple[str, str]] = [
+        ("archived", "INTEGER NOT NULL DEFAULT 0"),
+        ("deleted_at", "TEXT"),
+    ]
+    for col, decl in migrations:
+        if col in existing:
+            continue
+        try:
+            conn.execute(f"ALTER TABLE threads ADD COLUMN {col} {decl}")
+            logger.info("M-5 migration: threads.{} added ({})", col, decl)
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "duplicate column" in msg or "already exists" in msg:
+                logger.debug("M-5 migration: threads.{} already exists, skip", col)
+            else:
+                raise
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_threads_owner_archived_updated "
+        "ON threads(owner_id, archived, updated_at DESC)"
+    )
+
+
 def _ensure_kb_meta_table(conn: sqlite3.Connection) -> None:
     """创建/迁移「知识库元信息」轻量表（V1.6 · P0-5 跨进程热更新 · 增补件 §3.2）。
 
@@ -357,6 +398,33 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_sync_thread  ON sync_log(thread_id);
             CREATE INDEX IF NOT EXISTS idx_sync_started ON sync_log(started_at);
             CREATE INDEX IF NOT EXISTS idx_sync_entity  ON sync_log(entity_id);
+
+            -- V1.7.0 多用户地基（P0-1）：会话归属表 + 按 owner 的会话列表索引
+            -- thread_id 直接复用 LangGraph checkpoint 主键，不加代理主键；
+            -- model_id 为 M-2 per-session 模型偏好（NULL = 用全局默认）；
+            -- owner_id 取自 JWT sub / user_id（管理员视角可跨用户）。
+            -- M-5 增量（主理人决策 Q1/Q2）：archived 0/1/2 + deleted_at 软删。
+            CREATE TABLE IF NOT EXISTS threads (
+                thread_id   TEXT PRIMARY KEY,
+                owner_id    TEXT NOT NULL,
+                title       TEXT NOT NULL DEFAULT '新会话',
+                model_id    TEXT,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                archived    INTEGER NOT NULL DEFAULT 0,
+                deleted_at  TEXT
+            );
+
+            -- 按 owner 的会话列表查询（前端会话侧栏 / /audit/hitl 角色过滤）
+            CREATE INDEX IF NOT EXISTS idx_threads_owner_updated
+                ON threads(owner_id, updated_at DESC);
+
+            -- M-5：侧栏查询索引（owner + 状态 + 时间）——**不在此处创建**，
+            -- 由末尾 `_ensure_threads_columns(conn)` 负责（它先 PRAGMA 补
+            -- archived/deleted_at 列再建索引）。若在此创建，存量库（threads
+            -- 表已存在、跳过 CREATE TABLE）会直接引用不存在的 archived 列
+            -- 导致 `sqlite3.OperationalError: no such column: archived`
+            -- 启动崩溃（QA Round 1 P0）。
         """)
         conn.commit()
         logger.info("Database initialized: {}", settings.database_path)
@@ -369,6 +437,8 @@ def init_db() -> None:
         _ensure_knowledge_chunks_columns(conn)
         # V1.6 P0-5 增补件 §3.2：补齐 kb_meta 表（跨进程热更新 revision 戳）
         _ensure_kb_meta_table(conn)
+        # M-5：补齐 threads 表 archived/deleted_at 列 + 侧栏索引（存量库升级）
+        _ensure_threads_columns(conn)
         conn.commit()
     finally:
         conn.close()

@@ -329,6 +329,60 @@ class HitlAuditService:
         finally:
             conn.close()
 
+    @staticmethod
+    def query_by_decision_with_threads(
+        decision: str | None,
+        limit: int = 100,
+        thread_ids: list[str] | None = None,
+        risk_level: RiskLevel | str | None = None,
+    ) -> list[dict[str, Any]]:
+        """按 decision + thread 白名单查询（V1.7.0 多用户 · 审计列表角色过滤）。
+
+        V1.7.0 语义（架构 multiuser-architecture B08 + PRD §四 审计读）：
+        - ``decision=None`` → 返回全部（原 ``decision=None`` 返回空列表的
+          行为已修正为「返回全部」，供审计页角色过滤后展示）；
+        - ``thread_ids=None`` → 不做 thread 过滤（管理员/审计/运维全量视角）；
+        - ``thread_ids=[]`` → 过滤到空集（调度员/知识管理员无本人会话时）；
+        - 其余参数语义与 :meth:`query_by_decision` 一致。
+        """
+        conn = get_connection()
+        try:
+            sql = (
+                "SELECT id, thread_id, interrupt_node, tool_name, "
+                "       user_id, user_name, user_role, decision, "
+                "       original_args, edited_args, edit_reason, "
+                "       safety_recheck_result, reason, "
+                "       ip_address, user_agent, created_at, "
+                "       risk_level, pause_count, edit_count "
+                "  FROM hitl_audit_log "
+                " WHERE 1=1"
+            )
+            params: list[Any] = []
+            if decision is not None:
+                sql += " AND decision = ?"
+                params.append(decision)
+            if thread_ids is not None:
+                if len(thread_ids) == 0:
+                    # 白名单为空 → 直接返回空列表（避免 IN () 语法错误）
+                    return []
+                placeholders = ",".join("?" for _ in thread_ids)
+                sql += f" AND thread_id IN ({placeholders})"
+                params.extend(thread_ids)
+            if risk_level is not None:
+                level_value = (
+                    risk_level.value
+                    if isinstance(risk_level, RiskLevel)
+                    else str(risk_level)
+                )
+                sql += " AND risk_level = ?"
+                params.append(level_value)
+            sql += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     # ── 保留期 ─────────────────────────────────────
 
     @staticmethod

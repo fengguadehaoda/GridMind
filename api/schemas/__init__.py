@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 
 # ═══════════════════════════════════════════════════════
@@ -86,11 +86,69 @@ class ChatResponse(BaseModel):
     interrupt_msg: str | None = None
     # Bug2 修复：演示模式剧本外响应标记（前端据此清审批态 + 展示提示）
     is_demo_out_of_scope: bool = False
+    # M-3 新增：知识库 Agent 轮次的结构化回答（含 sources）；仅 knowledge_agent
+    # 且非空时携带（K-6），其他 Agent / 空值不出现该键。
+    knowledge_answer: KnowledgeAnswer | None = None
 
 
 class ThreadInfo(BaseModel):
     thread_id: str
     messages: list[Message]
+
+
+# ═══════════════════════════════════════════════════════
+# 模型切换 / 会话模型（V1.7.0 多用户 · M-2 per-session 模型隔离）
+# ═══════════════════════════════════════════════════════
+
+class ModelSwitchRequest(BaseModel):
+    """模型切换请求体（V1.7.0：新增可选 ``thread_id``）。
+
+    - ``{"model_id": "deepseek-chat"}`` —— 旧路径，进程级全局（US-2.3 兼容）；
+    - ``{"model_id": "deepseek-chat", "thread_id": "t-A"}`` —— 会话级
+      （``threads.model_id`` UPSERT；NULL = 全局默认）。
+    """
+
+    model_id: str
+    thread_id: str | None = None
+
+
+class ThreadSummary(BaseModel):
+    """会话摘要（``threads`` 表行投影，M-5 会话列表响应）。
+
+    字段与 PRD §五 DDL 对齐：thread_id / title / model_id / created_at /
+    updated_at / archived（owner_id 为内部字段，默认不对外暴露）。
+    ``archived`` 为 **int**（0=活跃 1=归档 2=删除软删），与后端 threads 列
+    一致（主理人决策 Q1 + 架构 §八 待明确 6；非 boolean）。
+    """
+
+    thread_id: str
+    title: str = "新会话"
+    model_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    archived: int = 0
+
+
+class SessionListResponse(BaseModel):
+    """``GET /sessions`` 会话列表响应。"""
+
+    sessions: list[ThreadSummary]
+    total: int
+
+
+class SessionRenameRequest(BaseModel):
+    """``PATCH /sessions/{thread_id}`` 重命名请求体。"""
+
+    title: str = Field(..., min_length=1, max_length=100, description="新标题")
+
+
+class SessionActionResponse(BaseModel):
+    """归档 / 恢复 / 删除写端点响应。"""
+
+    ok: bool
+    thread_id: str
+    archived: int = 0
+    title: str | None = None
 
 
 # ═══════════════════════════════════════════════════════
@@ -157,11 +215,89 @@ class GraphRelation(BaseModel):
     relation_type: str  # 包含/关联/处置/触发/…
 
 
+class SourceRef(BaseModel):
+    """M-3 知识库来源引用（结构化来源，字段命名对齐 ``search_feature_intro``）。
+
+    字段全部可选（snake_case，K-1）——真实检索/feature-intro/mock 三种来源
+    字段完整度不同，缺失字段由前端降级展示（K-5）。
+    """
+
+    chunk_id: int | None = None          # SQLite knowledge_chunks 自增 id；feature-intro 无 → None
+    doc_id: str | None = None            # 必填语义；空 → 前端 (未知文档)
+    filename: str | None = None          # meta.filename 或 source 反解（user-upload/<原名>）
+    title: str | None = None             # 文档标题
+    source: str | None = None            # 原始 source 字段（user-upload/主变运行规程.md）
+    section: str | None = None           # meta.section / md 章节；无 → None
+    score: float | None = None           # 真实检索分数 0-1；None → 前端不显示匹配度
+    snippet: str | None = None           # ≤120 字摘要（去《标题》前缀后截断）
+    content_excerpt: str | None = None   # ≥200 字原文摘录（chunk 全文去前缀；不足取全文）
+    chunk_index: int | None = None       # meta.chunk_index；缺失 → None
+    total_chunks: int | None = None      # meta.total_chunks；缺失 → None
+
+
 class RetrievalResult(BaseModel):
     vector_chunks: list[str] = []
     graph_entities: list[GraphEntity] = []
     graph_paths: list[list[str]] = []
     confidence: float = 0.0
+    # M-3 新增：结构化来源（与 vector_chunks 并行构建，K-3）
+    sources: list[SourceRef] = []
+    # M-4 新增：本轮实体抽取的 seed（图谱问答组装用，可选，向后兼容）
+    seed_ids: list[str] = []
+
+
+class GraphAnswerNode(BaseModel):
+    """M-4 图谱问答节点（字段与 PRD §四 / 架构 §3.1 完全一致，snake_case）。
+
+    ``hop`` 为距任一 seed 的最短距离（seed=0）；未知 → None。
+    ``doc_ids`` 按名称/类型与 sources 子串匹配（P1-4 协同，可为空）。
+    """
+
+    id: str
+    name: str
+    type: str  # 设备/故障/处置/规程/部件/…
+    properties: dict[str, Any] = {}
+    hop: int | None = None
+    doc_ids: list[str] = []
+    confidence: float | None = None  # seed=1.0；其余 max(0, 1 - 0.15*hop)
+
+
+class GraphAnswerEdge(BaseModel):
+    """M-4 图谱问答边（rule_id 本批恒为 None——规则推导边不启用，决策 3）。"""
+
+    source: str
+    target: str
+    relation_type: str  # 触发/导致/包含/关联/处置/CAUSES/…
+    confidence: float | None = None  # min(端点节点置信度)
+    rule_id: str | None = None
+
+
+class GraphPath(BaseModel):
+    """M-4 图谱推理路径（nodes 为节点 id 有序序列；relations 长度 = nodes - 1）。"""
+
+    nodes: list[str] = []
+    relations: list[str] = []
+    hops: int = 0
+    confidence: float = 0.0  # max(0, 1 - 0.15*hops)（与 KGPathOptimizer.estimate_cost 一致）
+
+
+class GraphAnswer(BaseModel):
+    """M-4 图谱问答答案（随 KnowledgeAnswer.graph_answer 内联下发）。
+
+    ``degraded`` = (backend=="networkx") or 组装异常——networkx 是**常态降级**，
+    仅作为前端弱提示，不表示错误、不阻断问答。
+    """
+
+    nodes: list[GraphAnswerNode] = []
+    edges: list[GraphAnswerEdge] = []
+    paths: list[GraphPath] = []
+    seed_ids: list[str] = []
+    confidence: float = 0.0  # 路径置信度按 1/(hops+1) 加权平均
+    backend: str = "networkx"  # "neo4j" | "networkx"
+    degraded: bool = False
+    latency_ms: float = 0.0
+    # M-3 协同（US-5）：与同轮 KnowledgeAnswer.sources 同源/子集
+    sources: list[SourceRef] = []
 
 
 class KnowledgeAnswer(BaseModel):
@@ -171,6 +307,26 @@ class KnowledgeAnswer(BaseModel):
     confidence: float
     refuse: bool = False
     refuse_reason: str | None = None
+    # M-3 新增：结构化来源（按 score 降序，已过滤 citation_min_score + 截断 top_n）。
+    # 旧消费方继续读 citations（string[]）——二者并行、互不替代（K-3）。
+    sources: list[SourceRef] = []
+    # M-4 新增：图谱问答答案（可选，向后兼容——旧数据无此键反解不报错）。
+    graph_answer: GraphAnswer | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize_omit_none_graph_answer(self, handler: Any) -> Any:
+        """M-4 向后兼容：``graph_answer`` 为 None 时省略该键。
+
+        Pydantic v2 的 ``model_dump()`` 默认会把值为 None 的可选字段也序列化
+        出来，这会让 M-3 旧消费方看到新增的 ``graph_answer: null``。为使 M-3
+        时代 ``KnowledgeAnswer`` 序列化**字节级不变**（SSE done 管道零改动，
+        架构 §7 共享知识 #8），仅当 ``graph_answer is None`` 时省略该键；
+        非 None 时原样透传（有 graph_answer 的 M-4 轮次完整下发）。
+        """
+        data = handler(self)
+        if isinstance(data, dict) and data.get("graph_answer") is None:
+            data.pop("graph_answer", None)
+        return data
 
 
 # ═══════════════════════════════════════════════════════
@@ -211,6 +367,9 @@ class AgentState(BaseModel):
     pause_signal: dict[str, Any] | None = None
     # V1.5.1 T03：abort() 注入（永久）；节点入口检查，命中则 throw interrupt({type: user_abort})
     abort_signal: dict[str, Any] | None = None
+    # V1.7.0 M-2：per-session 模型隔离——API 层解析后的会话生效模型；
+    # None → agent 节点 achat_completion 内部回退 get_current_model()（向后兼容）
+    model_id: str | None = None
 
 
 # ═══════════════════════════════════════════════════════
@@ -251,6 +410,13 @@ __all__ = [
     "ChatRequest",
     "ChatResponse",
     "ThreadInfo",
+    # V1.7.0 多用户
+    "ModelSwitchRequest",
+    "ThreadSummary",
+    # M-5 会话管理
+    "SessionListResponse",
+    "SessionRenameRequest",
+    "SessionActionResponse",
     "DeviceInfo",
     "TelemetryReading",
     "AnomalyItem",
@@ -259,6 +425,12 @@ __all__ = [
     "GraphRelation",
     "RetrievalResult",
     "KnowledgeAnswer",
+    "SourceRef",
+    # M-4 新增：图谱问答
+    "GraphAnswerNode",
+    "GraphAnswerEdge",
+    "GraphPath",
+    "GraphAnswer",
     "AgentState",
     # 新增 hitl_edit 导出
     "LOCKED_FIELDS",

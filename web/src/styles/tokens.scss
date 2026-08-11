@@ -62,11 +62,22 @@
   --grid-cell: #{$grid-cell};
   --glass-blur: #{$glass-blur};
 
+  // V1.7.0 F-1 大屏断点预留（CSS 变量；当前不产生可见样式变化）
+  --bp-bigscreen: #{$bp-bigscreen};
+
   // 主题切换全局过渡
   --theme-transition: background-color var(--dur-base) var(--ease-in-out-cubic),
                       color var(--dur-base) var(--ease-in-out-cubic),
                       border-color var(--dur-base) var(--ease-in-out-cubic),
                       box-shadow var(--dur-base) var(--ease-in-out-cubic);
+}
+
+// ─── V1.7.0 F-1 大屏模式占位块（仅扩展点，无可见样式变化）───
+// 未来实现大屏 UI 时在此挂载 data-display-mode="bigscreen" 的样式覆盖；
+// 当前块为空（displayStore.applyAttrs 已通用写入 data-display-mode）。
+:root[data-display-mode="bigscreen"] {
+  // 预留：大屏断点 token 已就绪（--bp-bigscreen）
+  // 大屏 UI 布局覆盖将在后续批次实现
 }
 
 // ─── 默认主题（防止 FOUC 期间无 data-theme 时取 dark）──

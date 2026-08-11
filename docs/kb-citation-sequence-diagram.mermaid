@@ -1,0 +1,52 @@
+sequenceDiagram
+    autonumber
+    title M-3 知识库来源引用链 · 真实路径（P0-4 打通 SSE→chatStore→RagPanel）
+
+    participant U as 调度员（前端）
+    participant CS as chatStore
+    participant API as FastAPI /chat/stream
+    participant G as LangGraph（supervisor→knowledge_agent）
+    participant AF as agent_factory 节点
+    participant TOOL as query_knowledge_base（MCP）
+    participant RE as RagEngine
+    participant VS as VectorStore
+    participant SSE as SSE done 事件
+    participant RP as RagPanel
+
+    U->>CS: sendMessage(question)
+    CS->>API: GET /chat/stream/{thread_id}?message=…（SSE，X-Display-Mode header）
+    API->>G: graph_builder.run(thread_id, message, display_mode)
+    G->>AF: 路由到 knowledge_agent（AgentState 携带 display_mode/model_id）
+    AF->>AF: LLM 解析 TOOL_CALL: query_knowledge_base
+    AF->>TOOL: _invoke_tool("query_knowledge_base", {query})
+    TOOL->>RE: engine.answer(query)（asyncio.to_thread）
+    RE->>VS: retrieve() → VectorStore.search(query, top_k, exclude_tags=["feature-intro"])
+    Note over VS: Chroma: score = clamp(1-distance,0,1)<br/>keyword: 命中率 0-1<br/>metadata 补齐 chunk_id/filename/chunk_index/total_chunks
+    VS-->>RE: vec_results（content + metadata + 真实 score）
+    RE->>RE: _make_source_ref() → sources（snippet≤120字 / content_excerpt≥200字）
+    RE-->>TOOL: KnowledgeAnswer(answer, citations, sources, graph_paths, confidence)
+    TOOL-->>AF: json.dumps(KnowledgeAnswer)（含 sources）
+    AF->>AF: _extract_knowledge_answer_from_results() → KnowledgeAnswer
+    AF->>AF: update["knowledge_answer"] = ka（AgentState 注入）
+    AF-->>G: return {messages, knowledge_answer, current_agent}
+    G-->>API: 最终 state dict
+    API->>API: 组装 done 事件 + knowledge_answer（model_dump，非空才携带）
+    API->>SSE: data: {"type":"done", "thread_id":…, "knowledge_answer":{…sources…}}
+    SSE-->>CS: onEvent(done) → 捕获 pendingKnowledgeAnswer
+    CS->>CS: 流式收尾 → attachContext({knowledgeAnswer})
+    CS-->>RP: msg.knowledgeAnswer 赋值（RagPanel 收到真实数据）
+    RP->>RP: useKbSources 归组/筛选 → CitationCard 列表
+    U->>RP: 点击「点开查看原文」
+    RP-->>U: 内联展开 content_excerpt（≥200 字）+ doc_id 复制
+
+    Note over U,RP: mock 模式链路（演示 / 无 Key 降级）：仅 AF 分支不同
+    CS->>API: sendMessage（X-Display-Mode: presentation 或 standard 无 Key）
+    API->>G: graph_builder.run
+    G->>AF: knowledge_agent（mock_mode=True）
+    AF->>AF: _get_mock_response → 剧本文本（油温/过载/停机检修/兜底/feature-intro）
+    AF->>AF: _build_mock_knowledge_answer() → KnowledgeAnswer（硬编码 sources，与正文一致）
+    AF-->>G: return {messages, knowledge_answer}
+    G-->>API: state dict
+    API->>SSE: done 事件 + knowledge_answer
+    SSE-->>CS: attachContext({knowledgeAnswer})
+    CS-->>RP: 渲染同一套引用卡片（前端零 mock/真实分支）

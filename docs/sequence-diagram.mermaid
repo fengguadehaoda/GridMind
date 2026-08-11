@@ -1,36 +1,57 @@
+# GridMind v1.7.0 第一批 · 时序图（提取自 multiuser-architecture-2026-08-10.md §4）
+# 含：① 多用户越权拒绝 ② per-session 模型切换 ③ 新会话创建 + 存量懒登记
+
+# ── 4.1 多用户访问他人会话被拒（生产）──────────────────────────────
 sequenceDiagram
-    autonumber
-    participant U as 用户/前端 KnowledgeUpload.vue
-    participant R as api/routers/knowledge_upload.py
-    participant S as KbUploadService (core/kb_upload.py)
-    participant VS as VectorStore (core/vector_store.py)
-    participant DB as SQLite knowledge_chunks + kb_meta
-    participant CH as Chroma knowledge_base
-    participant M as MCP 进程 9901 (RAG retrieve)
+    participant U as 李四（调度员）
+    participant FE as 前端 ChatView
+    participant API as FastAPI /thread/{id}
+    participant AUTH as verify_thread_ownership_if_prod
+    participant TS as threads 表
+    U->>FE: 尝试打开张三的会话 t-A
+    FE->>API: GET /thread/t-A（Bearer 李四JWT, role=dispatcher）
+    API->>AUTH: Depends 校验
+    AUTH->>AUTH: verify_jwt_token → user_id=L4（401 若无效）
+    AUTH->>AUTH: token.thread_id claim（若有）≠ t-A → 403 快速路径
+    AUTH->>AUTH: settings.is_production == True
+    AUTH->>TS: SELECT owner_id FROM threads WHERE thread_id='t-A'
+    TS-->>AUTH: owner_id=ZS（张三）
+    AUTH->>AUTH: role=dispatcher（非管理员）且 owner≠L4 → 403
+    AUTH-->>API: HTTPException 403 Forbidden
+    API-->>FE: 403 {"detail": "..."}
+    FE-->>U: 提示「无权访问该会话」
 
-    U->>R: POST /api/knowledge/upload (multipart: file, title?)
-    R->>R: Depends(verify_jwt_if_prod) 鉴权
-    R->>S: ingest(filename, data, title)
-    S->>S: 校验扩展名(.txt/.md) + 大小(≤5MB)
-    S->>S: 编码检测 UTF-8 → GBK 兜底
-    S->>S: 切分 → 构建 chunks（doc_id=user-upload:slug-hash, tags=[user-upload, source:文件名]）
-    S->>VS: get_vector_store().upsert_chunks(chunks)
-    VS->>DB: DELETE WHERE doc_id=? 旧分片（幂等覆盖）
-    VS->>DB: INSERT 新分片（单事务）
-    VS->>DB: reload() 重载内存 _chunks
-    VS->>CH: upsert(ids=doc::doc_id, embeddings, metadatas)
-    VS->>DB: _bump_revision() 写 kb_revision
-    VS-->>S: return chunk_count
-    S-->>R: UploadResponse
-    R-->>U: 200 {doc_id, chunk_count, status:"ok"}
-    Note over U: 前端提示「已入库，共 N 个知识片段」
+# ── 4.2 per-session 模型切换 ────────────────────────────────────────
+sequenceDiagram
+    participant U as 张三（调度员）
+    participant MS as ModelSwitcher + modelStore
+    participant API as POST /models/switch
+    participant AUTH as verify_jwt_if_prod + ensure_thread_owned
+    participant TS as threads 表
+    Note over MS: chatStore.activeThreadId = t-A（会话 A 激活中）
+    U->>MS: 切换模型 → deepseek-chat
+    MS->>MS: threadId = activeThreadId.value ?? null
+    MS->>API: POST /models/switch {model_id, thread_id: "t-A"}
+    API->>AUTH: token 校验 + 生产 owner(t-A)=张三（越权 403）
+    AUTH-->>API: ok
+    API->>TS: UPDATE threads SET model_id='deepseek-chat' WHERE thread_id='t-A'
+    TS-->>API: ok
+    API-->>MS: {ok: true, current: 'deepseek-chat', thread_id: 't-A'}
+    MS->>MS: sessionModels['t-A'] = 'deepseek-chat'
+    Note over TS: 会话 B 的 model_id 不受影响（NULL 回退全局默认）
 
-    Note over M: 下一次 RAG 检索时（≤10s 验收）
-    M->>M: ensure_fresh() 节流检查 kb_revision
-    M->>DB: SELECT kb_revision
-    alt revision 变化
-        M->>M: reload() 重载内存分片（含 user-upload）
-        M-->>U: 检索命中新知识
-    else 无变化
-        M-->>U: 使用既有分片
-    end
+# ── 4.3 新会话创建 + 存量懒登记 ─────────────────────────────────────
+sequenceDiagram
+    participant U as 张三
+    participant FE as 前端
+    participant API as POST /chat
+    participant TS as threads 表
+    participant G as GraphBuilder.run
+    U->>FE: 新建会话，发送首条消息
+    FE->>API: POST /chat {message, thread_id: null}
+    API->>API: 生成 thread_id = thread-xxx
+    API->>TS: create_thread(thread-xxx, owner=张三, model_id=NULL)
+    API->>G: run(thread-xxx, model_id=get_model_for_thread(thread-xxx) → 默认模型)
+    G-->>API: {thread_id: thread-xxx, ...}
+    API-->>FE: ChatResponse(thread_id: thread-xxx)
+    Note over TS: 存量 v1.6 线程：首次成功访问 → ensure_thread 懒登记接管（或 backfill 脚本归 system）

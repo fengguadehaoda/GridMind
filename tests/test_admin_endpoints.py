@@ -177,27 +177,19 @@ def test_admin_checkpoint_stats_with_valid_token(client: TestClient) -> None:
 
 
 def test_admin_checkpoint_stats_without_token_returns_401(client: TestClient) -> None:
-    """不提供 ``X-Admin-Token`` header → 401 Unauthorized（T05 与 T02 区分的关键）。
+    """dev 模式匿名 → 放行（V1.7.0 RBAC 契约变更，架构 §7.3：require_role dev 放行）。
 
-    与 T02 实现（统一 403）不同，T05 精细化为：
-    - 无 token → 401（"需要鉴权"语义）
-    - 有 token 但错 → 403（"鉴权失败"语义）
+    V1.7.0 变更说明：``/admin/checkpoint-stats`` 鉴权由 ``verify_admin_token``
+    （始终要 token）改为 ``require_role(OPERATOR, ADMIN)``（与 verify_jwt_if_prod
+    同语义：生产强制、dev 放行）。因此 dev 模式下无 token → 200（矩阵不生效）；
+    生产模式匿名 → 401（JWT 缺失）已由 ``test_rbac_matrix`` 覆盖。
     """
-    # 不带 X-Admin-Token header
+    # dev 模式：require_role 放行（矩阵不生效）
     response = client.get("/admin/checkpoint-stats")
-    assert response.status_code == 401, (
-        f"无 token 应 401，实际 {response.status_code}: {response.text}"
+    assert response.status_code == 200, (
+        f"dev 模式匿名应 200（RBAC dev 放行），实际 {response.status_code}: {response.text}"
     )
-    body = response.json()
-    assert "missing" in body.get("detail", "").lower() or (
-        "X-Admin-Token" in body.get("detail", "")
-    ), f"401 错误信息应提示 token 缺失，实际: {body}"
-    # 响应头应包含 WWW-Authenticate（REST 鉴权惯例）
-    www_auth = response.headers.get("WWW-Authenticate", "")
-    assert "X-Admin-Token" in www_auth, (
-        f"401 响应头应有 WWW-Authenticate: X-Admin-Token，实际: {www_auth!r}"
-    )
-    print(f"[PASS] 无 token → 401 + WWW-Authenticate 头: {body}")
+    print(f"[PASS] dev 匿名 → 200（V1.7.0 require_role dev 放行）")
 
 
 # ═══════════════════════════════════════════════════════
@@ -240,18 +232,19 @@ def test_admin_checkpoint_stats_with_wrong_token_returns_403(client: TestClient)
 def test_admin_checkpoint_stats_with_empty_token_returns_401(
     client: TestClient,
 ) -> None:
-    """``X-Admin-Token: ""``（空字符串）视为无 token → 401。
+    """``X-Admin-Token: ""``（空字符串）视为无凭证（V1.7.0：dev 放行 → 200）。
 
-    与"有 token 但值错误"（403）区分：空字符串等同于无鉴权尝试。
+    V1.7.0 变更：空字符串被 require_role 视为「未提供 admin token」→ dev 放行；
+    生产模式匿名（无 JWT）→ 401 由 test_rbac_matrix 覆盖。
     """
     response = client.get(
         "/admin/checkpoint-stats",
         headers={"X-Admin-Token": ""},
     )
-    assert response.status_code == 401, (
-        f"空 token 应视为无 token → 401，实际 {response.status_code}"
+    assert response.status_code == 200, (
+        f"dev 空 token 应视为未提供 → 200（放行），实际 {response.status_code}"
     )
-    print(f"[PASS] 空 token → 401（与 #2 '无 header' 行为一致）")
+    print(f"[PASS] dev 空 token → 200（V1.7.0 require_role dev 放行）")
 
 
 # ═══════════════════════════════════════════════════════

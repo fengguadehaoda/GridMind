@@ -447,7 +447,7 @@ class _E2EGraphBuilder:
         self.run_calls: int = 0
         self.pause_calls: int = 0
 
-    async def run(self, thread_id: str, message: str, display_mode: str | None = None) -> dict[str, Any]:
+    async def run(self, thread_id: str, message: str, display_mode: str | None = None, model_id: str | None = None) -> dict[str, Any]:
         self.run_calls += 1
         # 模拟 HITL 拦截：返回 pending
         return {

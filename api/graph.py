@@ -436,11 +436,14 @@ class GraphBuilder:
             # B1：chat_completion 是同步 LLM 调用（DashScope SDK / urllib 60s
             # 超时），在 async 节点内直接调用会阻塞事件循环 → 走 achat_completion
             # （内部 asyncio.to_thread 包装到工作线程）。
+            # V1.7.0 M-2：supervisor 路由 LLM 用会话生效模型（state.model_id，
+            # None 时 achat_completion 内部回退全局）
             ok, decision_raw = await achat_completion(
                 messages=[
                     {"role": "system", "content": SUPERVISOR_PROMPT},
                     {"role": "user", "content": route_context},
                 ],
+                model_id=state.model_id,
                 temperature=0.1,
             )
             if not ok:
@@ -521,6 +524,7 @@ class GraphBuilder:
         thread_id: str,
         message: str,
         display_mode: str | None = None,
+        model_id: str | None = None,
     ) -> dict[str, Any]:
         """运行一次对话（阻塞，流式由 API 层处理）。
 
@@ -529,6 +533,11 @@ class GraphBuilder:
 
         Bug1 修复：新增 ``display_mode`` 参数——前端 ``X-Display-Mode``
         header 透传进 AgentState，agent 节点据此决定 mock/真实 LLM 路径。
+
+        V1.7.0 M-2：新增 ``model_id`` 参数——API 层 ``resolve_model(thread_id)``
+        解析的会话生效模型写入 ``AgentState.model_id``，agent 节点
+        ``achat_completion(model_id=state.model_id)`` 贯通 per-session 隔离
+        （None 时内部回退全局，向后兼容）。
         """
         self._ensure_compiled()
         config = {"configurable": {"thread_id": thread_id}}
@@ -536,6 +545,7 @@ class GraphBuilder:
             messages=[{"role": "user", "content": message}],
             thread_id=thread_id,
             display_mode=display_mode,
+            model_id=model_id,
         )
         try:
             result = await self.graph.ainvoke(initial_state, config)
@@ -624,6 +634,7 @@ class GraphBuilder:
         reason: str = "",
         edited_args: dict[str, Any] | None = None,
         edit_reason: str = "",
+        model_id: str | None = None,
     ) -> dict[str, Any]:
         """从中断处恢复执行（用于 HITL 审批后 **或** pause 软恢复）。
 
@@ -633,12 +644,17 @@ class GraphBuilder:
         - 其他 action（``approved`` / ``rejected`` / ``edit_approved``）：HITL 老路径
           走 ``Command(resume=approval)`` 注入审批结果（图从原 ``interrupt()`` 处恢复）
 
+        V1.7.0 M-2：新增 ``model_id`` 参数——continue_from_pause 路径重跑时
+        注入会话生效模型（覆盖 checkpoint 中可能残留的旧值；HITL 路径沿用
+        checkpoint 内已存的 AgentState.model_id）。
+
         Args:
             thread_id:   会话线程 ID。
             action:      恢复动作（continue_from_pause / approved / rejected / edit_approved）。
             reason:      拒绝/批准原因（仅 approve/reject 用）。
             edited_args: 编辑后参数（仅 edit_approved 注入到 interrupt() 返回值）。
             edit_reason: 修改原因（仅 edit_approved 用）。
+            model_id:    V1.7.0 会话生效模型（可选；continue_from_pause 用）。
 
         Returns:
             - continue_from_pause 路径：``{"status": "resumed", "thread_id", "messages_count"}``
@@ -666,6 +682,9 @@ class GraphBuilder:
             new_values = dict(current.values or {})
             new_values.pop("pause_signal", None)
             new_values["pause_signal"] = None  # 显式置 None
+            # V1.7.0 M-2：注入会话生效模型（None 时不覆盖，保持 checkpoint 值）
+            if model_id is not None:
+                new_values["model_id"] = model_id
             try:
                 await self.graph.aupdate_state(config, new_values)
             except Exception as e:

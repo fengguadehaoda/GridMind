@@ -238,13 +238,26 @@ class VectorStore:
         ids = [self._chroma_id(c) for c in chunks]
         metas: list[dict[str, Any]] = []
         for c in chunks:
-            metas.append({
+            c_meta = c.get("meta") or {}
+            entry: dict[str, Any] = {
                 "doc_id": c["doc_id"],
                 "title": c["title"],
                 "source": c.get("source", "") or "",
                 # Chroma metadata 只接受标量，tags 存逗号串
                 "tags": _join_tags(c.get("tags")),
-            })
+            }
+            # M-3：metadata 追加结构化字段（None 会被 Chroma 拒绝 → 仅写非空标量）
+            if c.get("chunk_id") is not None:
+                entry["chunk_id"] = c["chunk_id"]
+            if c_meta.get("filename"):
+                entry["filename"] = str(c_meta["filename"])
+            if c_meta.get("chunk_index") is not None:
+                entry["chunk_index"] = int(c_meta["chunk_index"])
+            if c_meta.get("total_chunks") is not None:
+                entry["total_chunks"] = int(c_meta["total_chunks"])
+            if c_meta.get("section"):
+                entry["section"] = str(c_meta["section"])
+            metas.append(entry)
 
         try:
             # 尝试用 DashScope embedding；无 Key 或无网络时 fallback 到 keyword
@@ -262,22 +275,106 @@ class VectorStore:
 
     @staticmethod
     def _chroma_id(chunk: dict[str, Any]) -> str:
-        """生成 Chroma 文档 id —— 以 ``doc_id`` 为主键保证覆盖式去重。
+        """生成 Chroma 文档 id —— ``doc_id`` 主键 + chunk 唯一后缀。
 
-        老 seed 分片的 ``doc_id`` 形如 ``doc-001``（一 doc 一 chunk），
-        功能介绍分片形如 ``feature-intro:tour-chat``（一 section 一 chunk），
-        两者都天然唯一；``chunk_id`` 仅作为极端重复时的后缀兜底。
+        P2-F（C-2）：此前恒为 ``doc::{doc_id}``，同一文档多 chunk 会互相覆盖
+        （Chroma ``upsert`` 同 id 覆盖 → 只保留最后一个 chunk）。现在追加 chunk
+        唯一后缀：
+        - ``chunk_id``（SQLite 自增主键，稳定唯一）→ ``doc::{doc_id}::c{chunk_id}``
+        - 罕见无 chunk_id 的分片回退 ``meta.chunk_index`` → ``doc::{doc_id}::i{idx}``
+        - 两者皆缺再回退裸 ``doc::{doc_id}``（老 seed 一 doc 一 chunk 天然唯一）。
+
+        兼容性：检索结果补全（:meth:`_enrich_search_result`）与按 ``doc_id``
+        元数据删除（:meth:`_remove_from_chroma` where 过滤）都不依赖 id 具体格式，
+        新旧 id 可共存；存量 Chroma 集合（旧 ``doc::{doc_id}`` 单条目）不受影响，
+        该文档重新上传时会被 where 删除清理后重建（幂等）。
 
         Args:
             chunk: 分片 dict。
 
         Returns:
-            Chroma id 字符串。
+            Chroma id 字符串（同文档不同 chunk 唯一）。
         """
         doc_id = str(chunk.get("doc_id") or "").strip()
-        if doc_id:
-            return f"doc::{doc_id}"
-        return f"chunk-{chunk.get('chunk_id', 0)}"
+        if not doc_id:
+            return f"chunk-{chunk.get('chunk_id', 0)}"
+        chunk_id = chunk.get("chunk_id")
+        if chunk_id is not None:
+            return f"doc::{doc_id}::c{chunk_id}"
+        meta = chunk.get("meta") or {}
+        chunk_index = meta.get("chunk_index")
+        if chunk_index is not None:
+            return f"doc::{doc_id}::i{chunk_index}"
+        return f"doc::{doc_id}"
+
+    @staticmethod
+    def _distance_to_score(distance: float) -> float:
+        """把 Chroma 余弦距离换算为相似度 score（0-1，K-2）。
+
+        cosine space 下距离 ∈ [0, 2]；``1 - distance`` 对相关片段通常在
+        [0, 1] 区间，越界部分 clamp 到 [0, 1] 后再 ``round(3)``。
+        M-3 修复：此前 Chroma 分支 score 恒为 0.0（PRD 现状核查 #6）。
+
+        Args:
+            distance: Chroma 返回的距离值（float 或可转 float 的标量）。
+
+        Returns:
+            归一化相似度（0-1，3 位小数）；非法输入返回 0.0。
+        """
+        try:
+            d = float(distance)
+        except (TypeError, ValueError):
+            return 0.0
+        return round(min(1.0, max(0.0, 1.0 - d)), 3)
+
+    def _enrich_search_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """补齐 search 返回项的 metadata（chunk_id/filename/chunk_index/total_chunks/section）。
+
+        Chroma metadata 在建索引时只写入标量（None 会被 Chroma 拒绝），且老库
+        Chroma 集合可能缺这些字段——因此这里以 ``self._chunks``（SQLite 权威
+        事实源）兜底补齐。匹配策略：优先 ``chunk_id`` 精确匹配；退化为
+        ``doc_id + content`` 双键匹配（老 seed 分片无独立 chunk_id）。
+
+        Args:
+            result: ``search()`` 单个返回项（含 ``content`` / ``metadata`` / ``score``）。
+
+        Returns:
+            补齐 metadata 后的同一返回项（缺失字段保留 None/空串，绝不抛错）。
+        """
+        meta = dict(result.get("metadata") or {})
+        content = result.get("content", "")
+        match: dict[str, Any] | None = None
+
+        chunk_id = meta.get("chunk_id")
+        if chunk_id is not None:
+            for c in self._chunks:
+                if c.get("chunk_id") == chunk_id:
+                    match = c
+                    break
+        if match is None:
+            doc_id = str(meta.get("doc_id") or "")
+            for c in self._chunks:
+                if str(c.get("doc_id") or "") == doc_id and c.get("content") == content:
+                    match = c
+                    break
+
+        if match is not None:
+            m = match.get("meta") or {}
+            meta.setdefault("chunk_id", match.get("chunk_id"))
+            meta.setdefault("filename", m.get("filename"))
+            meta.setdefault("chunk_index", m.get("chunk_index"))
+            meta.setdefault("total_chunks", m.get("total_chunks"))
+            meta.setdefault("section", m.get("section"))
+            # source / title / doc_id 兜底（keyword fallback 可能缺失）
+            if not meta.get("source") and match.get("source"):
+                meta["source"] = match["source"]
+            if not meta.get("title") and match.get("title"):
+                meta["title"] = match["title"]
+            if not meta.get("doc_id") and match.get("doc_id"):
+                meta["doc_id"] = match["doc_id"]
+
+        result["metadata"] = meta
+        return result
 
     def search(
         self,
@@ -308,11 +405,15 @@ class VectorStore:
                     )
                     docs = results.get("documents", [[]])[0]
                     metas = results.get("metadatas", [[]])[0]
+                    # M-3 修复（P0-2）：读取真实 distances → score = clamp(1-distance, 0, 1)
+                    distances = results.get("distances", [[]])[0]
                     raw: list[dict[str, Any]] = [
                         {
                             "content": docs[i],
                             "metadata": metas[i],
-                            "score": 0.0,
+                            "score": self._distance_to_score(
+                                distances[i] if i < len(distances) else 0.0
+                            ),
                             "tags": _split_tags(metas[i].get("tags", "")),
                         }
                         for i in range(len(docs))
@@ -322,7 +423,8 @@ class VectorStore:
                             r for r in raw
                             if not (set(r.get("tags") or []) & exclude_set)
                         ]
-                    return raw[:top_k]
+                    # 用 SQLite 权威分片补齐 metadata（chunk_id/filename/chunk_index/...）
+                    return [self._enrich_search_result(r) for r in raw[:top_k]]
             except Exception as e:
                 logger.warning("Chroma query failed ({}), fallback to keyword", e)
 
@@ -363,14 +465,27 @@ class VectorStore:
                 scored.append((score, c))
 
         scored.sort(key=lambda x: -x[0])
-        return [
-            {"content": c["content"], "metadata": {
-                "doc_id": c["doc_id"],
-                "title": c["title"],
-                "source": c.get("source", ""),
-            }, "score": round(s, 3), "tags": list(c.get("tags") or [])}
-            for s, c in scored[:top_k]
-        ]
+        results: list[dict[str, Any]] = []
+        for s, c in scored[:top_k]:
+            m = c.get("meta") or {}
+            results.append({
+                "content": c["content"],
+                "metadata": {
+                    "doc_id": c["doc_id"],
+                    "title": c["title"],
+                    "source": c.get("source", ""),
+                    # M-3：keyword fallback 同步补齐结构化元信息（K-2/元数据契约）
+                    "chunk_id": c.get("chunk_id"),
+                    "filename": m.get("filename"),
+                    "chunk_index": m.get("chunk_index"),
+                    "total_chunks": m.get("total_chunks"),
+                    "section": m.get("section"),
+                },
+                "score": round(s, 3),
+                "tags": list(c.get("tags") or []),
+            })
+        # 与 Chroma 分支同一补齐通道（保证两份路径 metadata 字段一致）
+        return [self._enrich_search_result(r) for r in results]
 
     # ═══════════════════════════════════════════════════════
     # 功能介绍知识库化（2026-08-05 新增）
@@ -483,6 +598,19 @@ class VectorStore:
         # 3. 重载内存分片（拿到自增 chunk_id）+ 同步 Chroma
         self.reload()
         touched = {c["doc_id"] for c in normalized}
+        # P2-F（C-2）：重传前先按 doc_id 清掉该文档旧 Chroma 条目（旧 doc::{doc_id}
+        # 单条目 + 新 doc::{doc_id}::c{chunk_id} 多条目），避免 SQLite DELETE+INSERT
+        # 后 chunk_id 变化导致陈旧向量残留（幂等，重传不产生重复条目）。
+        # SQLite 是权威事实源，清理失败仅告警、不阻断主流程。
+        if self._collection is not None:
+            for doc_id in touched:
+                try:
+                    self._collection.delete(where={"doc_id": doc_id})
+                except Exception as e:  # noqa: BLE001 — 清理失败不阻断主流程
+                    logger.warning(
+                        "Chroma pre-cleanup failed for {} ({}); SQLite is authoritative",
+                        doc_id, e,
+                    )
         self._index_chunks([c for c in self._chunks if c["doc_id"] in touched])
 
         # 4. V1.6 P0-5 增补件 §3.2：与分片写入同一事务后 bump kb_revision，
@@ -533,7 +661,7 @@ class VectorStore:
         执行链路（沿用 :meth:`upsert_chunks` 事务模式）：
         1. ``DELETE FROM knowledge_chunks WHERE doc_id = ?``（单事务）
         2. :meth:`reload` 重载内存分片
-        3. 按 ``doc::<doc_id>`` 从 Chroma collection 移除（best-effort）
+        3. 按 ``doc_id`` 元数据从 Chroma collection 移除该文档全部条目（best-effort）
         4. :meth:`_bump_revision` 写 ``kb_revision`` → 跨进程 ``ensure_fresh`` 热更新
 
         Args:
@@ -572,10 +700,11 @@ class VectorStore:
         return deleted
 
     def _remove_from_chroma(self, doc_id: str) -> None:
-        """从 Chroma collection 移除单个文档（best-effort，失败仅告警）。
+        """从 Chroma collection 移除单个文档的**全部条目**（best-effort，失败仅告警）。
 
-        Chroma 侧以 ``doc::<doc_id>`` 为 id（与 :meth:`_index_chunks` 的
-        :meth:`_chroma_id` 对齐）；SQLite 是权威事实源，删除失败不影响主流程。
+        P2-F（C-2）：改为按 ``doc_id`` 元数据过滤删除（``where={"doc_id": ...}``），
+        兼容旧 id（``doc::{doc_id}`` 单条目）与新 id（``doc::{doc_id}::c{chunk_id}``
+        多条目）；SQLite 是权威事实源，删除失败不影响主流程。
 
         Args:
             doc_id: 目标文档 id。
@@ -583,7 +712,7 @@ class VectorStore:
         if self._collection is None:
             return
         try:
-            self._collection.delete(ids=[f"doc::{doc_id}"])
+            self._collection.delete(where={"doc_id": doc_id})
             logger.debug("VectorStore: removed doc {} from Chroma", doc_id)
         except Exception as e:  # noqa: BLE001 — Chroma 失败仅告警
             logger.warning(

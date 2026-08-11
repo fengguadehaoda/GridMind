@@ -5,14 +5,16 @@
 ===========================================  ======  ============================
 路径                                          方法    鉴权
 ===========================================  ======  ============================
-``/api/knowledge/upload``                    POST    Depends(verify_jwt_if_prod)
+``/api/knowledge/upload``                    POST    Depends(require_role(KB_ADMIN, ADMIN))
 ``/api/knowledge/uploads``                   GET     Depends(verify_jwt_if_prod)
-``/api/knowledge/uploads/{doc_id}``          DELETE  Depends(verify_jwt_if_prod)
+``/api/knowledge/uploads/{doc_id}``          DELETE  Depends(require_role(KB_ADMIN, ADMIN))
 ===========================================  ======  ============================
 
-**鉴权**（架构 §1.1 难点 6 + 共享知识 §7.7）：写操作（上传 / 删除）与列表读
-操作均 ``Depends(verify_jwt_if_prod)`` —— 生产强制 JWT（401 fail-closed），
-dev 放行（与既有 ``/devices`` 等数据端点一致）。
+**鉴权**（PRD P1-3 + 架构 §1.6 · D3 决策「全局共享 + 角色写权限」）：
+- **写操作**（上传 / 删除）→ ``require_role(KB_ADMIN, ADMIN)``——仅知识管理员 /
+  管理员（生产强制；admin token 等效管理员；dev 放行，Q5 决策）；
+- **读操作**（列表）→ ``verify_jwt_if_prod`` 保持全员可读（全局共享，任意
+  登录用户可检索他人上传文档，D3 决策不做按用户隔离）。
 
 **错误文案映射**（架构 §3.1 ``UploadError`` + 共享知识 §7.10 三分类）：
 - 400 ``INVALID_EXT``       —— 「仅支持 txt / md / pdf 文件」
@@ -36,6 +38,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from api.services.auth import verify_jwt_if_prod
+from api.services.rbac import Role, require_role
 from core.kb_upload import KbUploadService, MSG_INTERNAL, UploadError
 
 # ═══════════════════════════════════════════════════════
@@ -100,7 +103,7 @@ def _map_upload_error(exc: UploadError) -> HTTPException:
 async def upload_knowledge(
     file: Annotated[UploadFile, File(description="知识文档（.txt / .md / .pdf，≤5MB）")],
     title: Annotated[str | None, Form(description="可选标题，缺省取文件名")] = None,
-    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,  # type: ignore[assignment]
+    identity: Annotated[dict[str, Any] | None, Depends(require_role(Role.KB_ADMIN, Role.ADMIN))] = None,  # type: ignore[assignment]
 ) -> UploadResponse:
     """上传知识文档：解析 → 切分 → 入库（同步，成功即「已入库」）。
 
@@ -172,7 +175,7 @@ async def list_uploads(
 @router.delete("/uploads/{doc_id}", response_model=DeleteResponse)
 async def delete_upload(
     doc_id: str,
-    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,  # type: ignore[assignment]
+    identity: Annotated[dict[str, Any] | None, Depends(require_role(Role.KB_ADMIN, Role.ADMIN))] = None,  # type: ignore[assignment]
 ) -> DeleteResponse:
     """删除用户上传文档（物理删除 SQLite + Chroma 分片，bump revision）。
 

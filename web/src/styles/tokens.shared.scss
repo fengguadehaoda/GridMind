@@ -78,6 +78,8 @@ $bp-md: 768px;
 $bp-lg: 1024px;
 $bp-xl: 1280px;
 $bp-2xl: 1920px;
+// V1.7.0 F-1 大屏断点预留（4K 大屏，未来大屏 UI 用；当前不产生可见样式变化）
+$bp-bigscreen: 2560px;
 
 // 栅格
 $grid-cell: 32px;

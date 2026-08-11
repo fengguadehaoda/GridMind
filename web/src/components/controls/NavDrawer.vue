@@ -9,14 +9,10 @@
  */
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  ChatDotRound,
-  Monitor,
-  Histogram,
-  Document,
-  DataBoard,
-  Menu as MenuIcon,
-} from '@element-plus/icons-vue'
+import { Menu as MenuIcon } from '@element-plus/icons-vue'
+// M-5 T05：复用共享导航数据源 + 角色过滤（与 App.vue Header 同源）
+import { NAV_ITEMS } from '@/data/navItems'
+import { getJwtRole } from '@/composables/useJwtAuth'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{ (e: 'update:modelValue', value: boolean): void }>()
@@ -29,19 +25,11 @@ const open = computed({
   set: (v: boolean) => emit('update:modelValue', v),
 })
 
-interface NavItem {
-  path: string
-  label: string
-  icon: unknown
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { path: '/', label: '智能对话', icon: ChatDotRound },
-  { path: '/monitor', label: '实时监控', icon: Monitor },
-  { path: '/grayscale', label: '灰度面板', icon: Histogram },
-  { path: '/audit', label: 'HITL 审计', icon: Document },
-  { path: '/system', label: '系统总览', icon: DataBoard },
-]
+/** 按角色过滤后的可见导航（缺省 roles = 全员；灰度/审计/系统按角色） */
+const visibleItems = computed(() => {
+  const role = getJwtRole()
+  return NAV_ITEMS.filter((item) => !item.roles || item.roles.includes(role))
+})
 
 function navigate(path: string): void {
   open.value = false
@@ -77,7 +65,7 @@ function navigate(path: string): void {
 
       <nav class="gm-nav-drawer__nav">
         <button
-          v-for="item in NAV_ITEMS"
+          v-for="item in visibleItems"
           :key="item.path"
           type="button"
           class="gm-nav-drawer__item"

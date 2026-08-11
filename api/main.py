@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import Annotated, Any, AsyncGenerator
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,30 +36,56 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from api.config import settings
+from api.config import APP_VERSION, settings
 from api.graph import GraphBuilder
 from api.metrics_endpoint import register_metrics_endpoint
 from api.schemas import (
     AbortRequest,
     ChatRequest,
     ChatResponse,
+    KnowledgeAnswer,
+    ModelSwitchRequest,
     PauseRequest,
     ResumeRequest,
     RewindRequest,
+    SessionActionResponse,
+    SessionListResponse,
+    SessionRenameRequest,
+    ThreadSummary,
 )
 from api.routers import feature_intro_router, knowledge_upload_router
 from api.schemas.hitl_edit import EditInterruptRequest
-from api.services.auth import verify_jwt_if_prod, verify_thread_ownership
+from api.services.auth import (
+    verify_audit_thread_access,
+    verify_jwt_if_prod,
+    verify_thread_ownership,
+    verify_thread_ownership_if_prod,
+)
 from api.services.error_handler import safe_endpoint
 from api.services.grayscale_admin_service import GrayscaleAdminService
 from api.services.hitl_audit_service import HitlAuditService, process_edit_decision
+from api.services.rbac import (
+    AUDIT_FULL_ACCESS_ROLES,
+    Role,
+    get_role,
+    require_role,
+)
 from api.services.session_lock import SessionLockTimeout, session_lock_manager
 from api.services.sse_event_emitter import sse_event_emitter
+from api.services.thread_store import (
+    ThreadStore,
+    delete_thread,
+    ensure_thread_owned,
+    get_model_for_thread,
+    resolve_model,
+    set_model_for_thread,
+)
 
 
 # ── Admin Token 鉴权依赖（T05 新增，与 GrayscaleAdminService 同源）──────────
-# 前置到路由定义之前，供 /models/switch、/grayscale/set、/debug/sync_force、
-# /admin/checkpoint-stats 等写/控制端点统一复用 Depends(verify_admin_token)。
+# 注意（V1.7.0）：灰度/管理端点已统一改用 ``require_role(OPERATOR, ADMIN)``
+# （其内部已内置 admin token 等效管理员逻辑），本依赖仅保留定义以兼容
+# 外部直接引用，新端点请勿再使用。
 #: - 无 X-Admin-Token header → **401 Unauthorized**（让客户端知道"需要鉴权"）
 #: - 有 header 但 token 不对 → **403 Forbidden**（让客户端知道"鉴权已失败"）
 async def verify_admin_token(
@@ -274,7 +300,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="GridMind API",
     description="灵枢电网 Multi-Agent 系统（FastAPI + LangGraph + MCP）",
-    version="1.3.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -339,7 +365,7 @@ async def root() -> dict[str, Any]:
     """健康检查（B4：反映真实 MCP 工具数，不再恒为 connected=True）。"""
     return {
         "service": "GridMind",
-        "version": "1.3.0",
+        "version": APP_VERSION,
         "status": "running",
         "mcp_connected": _mcp_tools_count > 0,
         "mcp_tools_count": _mcp_tools_count,
@@ -407,12 +433,17 @@ async def health_critical() -> dict[str, Any]:
     return {"critical": await get_critical_devices()}
 
 
-@app.post("/chat", dependencies=[Depends(verify_jwt_if_prod)])
+@app.post("/chat")
 async def chat(
     req: ChatRequest,
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
     x_display_mode: str | None = Header(default=None, alias="X-Display-Mode"),
 ) -> ChatResponse:
     """对话接口（阻塞模式）。
+
+    鉴权说明（V1.7.0）：``identity`` 参数即 ``Depends(verify_jwt_if_prod)``
+    —— 生产强制 JWT、dev 放行；不再重复声明路由级依赖（FastAPI 在
+    ``from __future__ import annotations`` 下会去重导致参数拿不到值）。
 
     V1.5.1 T04 改造（架构 §2.6.2 + §6 T04）：
     - 外层包 ``session_lock_manager.acquire(thread_id, timeout=5.0)`` —
@@ -424,15 +455,37 @@ async def chat(
 
     Bug1 修复：新增 ``X-Display-Mode`` header（standard/presentation），
     透传给 ``graph_builder.run`` 决定 mock/真实 LLM 路径。
+
+    V1.7.0 多用户（架构 §1.3 + §4.3）：
+    - ``req.thread_id`` 为空 → 服务端生成 thread_id 并登记 owner（新会话）；
+    - ``req.thread_id`` 非空 → ``ensure_thread_owned`` 生产 owner 校验 +
+      存量懒登记（403/404 语义见 thread_store）；
+    - 用 ``resolve_model(thread_id)`` 解析会话生效模型 → ``graph.run(model_id=...)``
+      贯通 per-session 模型隔离（M-2）。
     """
+    # V1.7.0：身份 + 角色（dev 下 identity=None → user="dev"/role=dispatcher）
+    user_id = _identity_user_id(identity)
+    role = get_role(identity if isinstance(identity, dict) else None)
+
+    # ⚠️ 安全校验必须优先于 graph-ready / 业务逻辑（防探测：即使图未就绪，
+    #    越权也先返回 403/404，不泄漏 thread 是否存在）
+    thread_id = req.thread_id or f"thread-{id(req)}"
+    if req.thread_id is None:
+        # 新会话：登记 owner（dev 下 owner="dev"，架构 §7.3）
+        ThreadStore().create_thread(thread_id, user_id)
+    else:
+        # 存量会话：生产 owner 校验 + 懒登记（严格模式 404）
+        ensure_thread_owned(thread_id, user_id, role)
+    # M-2：解析会话生效模型（threads.model_id ?? 全局）
+    model_id = resolve_model(thread_id)
+
     if graph_builder is None:
         raise HTTPException(status_code=503, detail="Graph not ready")
 
-    thread_id = req.thread_id or f"thread-{id(req)}"
     try:
         with session_lock_manager.acquire(thread_id, timeout=5.0):
             result = await graph_builder.run(
-                thread_id, req.message, display_mode=x_display_mode,
+                thread_id, req.message, display_mode=x_display_mode, model_id=model_id,
             )
             messages = result.get("messages", []) if isinstance(result, dict) else []
 
@@ -476,6 +529,18 @@ async def chat(
                         thread_id, e,
                     )
 
+            # M-3（C-4 防御性补齐）：阻塞 /chat 路径回填 knowledge_answer
+            # （HITL 后续轮次基本为 diagnosis，属低成本防御，不影响 SSE 主链路）。
+            ka_model: KnowledgeAnswer | None = None
+            ka_raw = result.get("knowledge_answer") if isinstance(result, dict) else None
+            if isinstance(ka_raw, KnowledgeAnswer):
+                ka_model = ka_raw
+            elif isinstance(ka_raw, dict):
+                try:
+                    ka_model = KnowledgeAnswer(**ka_raw)
+                except Exception as e:  # noqa: BLE001 — 反解失败按无来源处理
+                    logger.debug("chat knowledge_answer parse failed: {}", e)
+
             return ChatResponse(
                 thread_id=thread_id,
                 response=last_content or "处理完成",
@@ -484,6 +549,7 @@ async def chat(
                 interrupt_node=interrupt_node,
                 interrupt_msg=interrupt_msg,
                 is_demo_out_of_scope=is_demo_out_of_scope,
+                knowledge_answer=ka_model,
             )
     except SessionLockTimeout:
         raise HTTPException(
@@ -508,7 +574,7 @@ async def chat(
         )
 
 
-@app.get("/chat/stream/{thread_id}", dependencies=[Depends(verify_jwt_if_prod)])
+@app.get("/chat/stream/{thread_id}", dependencies=[Depends(verify_thread_ownership_if_prod)])
 async def chat_stream(
     thread_id: str,
     message: str,
@@ -518,14 +584,22 @@ async def chat_stream(
 
     Bug1 修复：新增 ``X-Display-Mode`` header（standard/presentation），
     透传给 ``graph_builder.run`` 决定 mock/真实 LLM 路径。
+
+    V1.7.0 多用户：依赖升级为 ``verify_thread_ownership_if_prod``
+    （生产 owner 校验 + 懒登记；dev 放行），并用 ``resolve_model``
+    解析会话生效模型透传 ``graph.run(model_id=...)``。
     """
     if graph_builder is None:
         raise HTTPException(status_code=503, detail="Graph not ready")
 
+    # M-2：会话生效模型（threads.model_id ?? 全局）；SSE 是 GET 无 body，
+    # owner 校验由依赖注入完成（生产 403/404 在响应返回前触发）
+    model_id = resolve_model(thread_id)
+
     async def event_generator() -> AsyncGenerator[str, None]:
         try:
             result = await graph_builder.run(
-                thread_id, message, display_mode=x_display_mode,
+                thread_id, message, display_mode=x_display_mode, model_id=model_id,
             )
             messages = result.get("messages", []) if isinstance(result, dict) else []
 
@@ -565,6 +639,13 @@ async def chat_stream(
                 "interrupt_msg": result.get("interrupt_msg") if isinstance(result, dict) else None,
                 "is_demo_out_of_scope": is_demo_out_of_scope,
             }
+            # M-3（K-6）：仅 knowledge_agent 且 knowledge_answer 非空时增量携带；
+            # 其他 Agent / 空值不出现该键，向后兼容旧前端（忽略未知键）。
+            ka_raw = result.get("knowledge_answer") if isinstance(result, dict) else None
+            if ka_raw is not None:
+                if hasattr(ka_raw, "model_dump"):
+                    ka_raw = ka_raw.model_dump()
+                final["knowledge_answer"] = ka_raw
             yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)}, ensure_ascii=False)}\n\n"
@@ -582,7 +663,7 @@ async def chat_stream(
     )
 
 
-@app.post("/interrupt/{thread_id}/approve", dependencies=[Depends(verify_jwt_if_prod)])
+@app.post("/interrupt/{thread_id}/approve", dependencies=[Depends(verify_thread_ownership_if_prod)])
 @safe_endpoint
 async def approve_interrupt(thread_id: str, req: InterruptRequest) -> ChatResponse:
     """[兼容壳] 批准 HITL 中断，继续执行高危工具。
@@ -628,7 +709,7 @@ async def approve_interrupt(thread_id: str, req: InterruptRequest) -> ChatRespon
         )
 
 
-@app.post("/interrupt/{thread_id}/reject", dependencies=[Depends(verify_jwt_if_prod)])
+@app.post("/interrupt/{thread_id}/reject", dependencies=[Depends(verify_thread_ownership_if_prod)])
 @safe_endpoint
 async def reject_interrupt(thread_id: str, req: InterruptRequest) -> ChatResponse:
     """[兼容壳] 拒绝 HITL 中断，终止高危工具执行。
@@ -672,11 +753,14 @@ async def reject_interrupt(thread_id: str, req: InterruptRequest) -> ChatRespons
         )
 
 
-@app.post("/interrupt/{thread_id}/decision", dependencies=[Depends(verify_jwt_if_prod)])
+@app.post("/interrupt/{thread_id}/decision")
 @safe_endpoint
 async def decide_interrupt(
     thread_id: str,
     req: EditInterruptRequest,
+    ownership: Annotated[
+        dict[str, Any] | None, Depends(verify_thread_ownership_if_prod)
+    ] = None,
 ) -> dict[str, Any]:
     """统一 HITL 决策端点（P0：Edit & Continue 改造）。
 
@@ -691,9 +775,20 @@ async def decide_interrupt(
     3. resume（safety 通过时才执行；替换 pending_tool_plan 中的 args）
 
     safety 重检失败：返回 200 + ``{"rejected_by_safety": true, ...}``，不 resume。
+
+    审计身份（V1.7.0 QA 记档修复）：``ownership`` 即
+    ``Depends(verify_thread_ownership_if_prod)`` 的返回值——生产模式为 owner
+    校验通过的 ownership dict（``user_id`` = JWT ``user_id``/``sub`` claim），
+    dev 模式为 ``None``（放行）。审计 ``user_id`` 取该值，使 HITL 决策可追溯
+    操作者身份（电网操作票追责）；dev 无 token 时回退 ``anonymous``。
     """
     if graph_builder is None:
         raise HTTPException(status_code=503, detail="Graph not ready")
+
+    # 审计 user_id：生产从 JWT 提取（ownership.user_id），dev 回退 anonymous。
+    audit_user_id = "anonymous"
+    if isinstance(ownership, dict) and ownership.get("user_id"):
+        audit_user_id = str(ownership["user_id"])
 
     ip, ua = _extract_request_meta()
 
@@ -701,7 +796,7 @@ async def decide_interrupt(
         result = await process_edit_decision(
             thread_id,
             req,
-            user_id="anonymous",  # TODO: 接 JWT 后替换
+            user_id=audit_user_id,
             user_name=None,
             user_role=None,
             ip_address=ip,
@@ -766,26 +861,99 @@ def _extract_request_meta() -> tuple[str | None, str | None]:
         return None, None
 
 
-@app.get("/audit/hitl/{thread_id}", dependencies=[Depends(verify_jwt_if_prod)])
+def _identity_user_id(identity: dict[str, Any] | None) -> str:
+    """从鉴权主体提取 user_id（V1.7.0 多用户）。
+
+    - 生产 JWT payload → ``user_id`` / ``sub``；
+    - dev（identity=None）→ ``"dev"``（架构 §7.3：dev 下新会话 owner 记 dev）。
+    """
+    if isinstance(identity, dict):
+        uid = identity.get("user_id") or identity.get("sub")
+        if uid:
+            return str(uid)
+    return "dev"
+
+
+def _audit_visible_thread_ids(
+    identity: dict[str, Any] | None,
+    request: Request | None = None,
+) -> list[str] | None:
+    """审计列表角色过滤（PRD §四 矩阵「审计读」）。
+
+    Args:
+        identity: 鉴权主体（生产 JWT payload / dev None）。
+        request: 可选 FastAPI Request（检测 ``X-Admin-Token`` 等效管理员）。
+
+    Returns:
+        - ``None``：不过滤（审计/运维/管理员全量视角；admin token 等效；
+          dev 模式全量）；
+        - ``list[str]``：仅可见 thread_id 列表（调度员/知识管理员本人会话；
+          空列表 = 无可见记录）。
+    """
+    if not settings.is_production or not isinstance(identity, dict):
+        return None
+    # admin token 等效管理员 → 全量（二选一通过，矩阵说明 4）
+    if request is not None:
+        x_admin_token = request.headers.get("X-Admin-Token")
+        if x_admin_token and GrayscaleAdminService.verify_admin_token(x_admin_token):
+            return None
+    role = get_role(identity)
+    if role in AUDIT_FULL_ACCESS_ROLES:
+        return None
+    user_id = _identity_user_id(identity)
+    return ThreadStore().list_thread_ids_by_owner(user_id)
+
+
+@app.get("/audit/hitl/{thread_id}", dependencies=[Depends(verify_audit_thread_access)])
 async def get_hitl_audit_log(thread_id: str) -> dict[str, Any]:
-    """查询指定 thread_id 的 HITL 审计记录（P0：审计追溯）。"""
+    """查询指定 thread_id 的 HITL 审计记录（P0：审计追溯）。
+
+    V1.7.0 多用户：依赖升级为 ``verify_audit_thread_access``——
+    审计/运维/管理员（或 admin token）全放行；调度员/知识管理员仅本人
+    thread（PRD Q1 决策「本人放行」；owner 不符 → 403，懒登记优先于 404）。
+    """
     rows = HitlAuditService.query_by_thread(thread_id)
     return {"thread_id": thread_id, "count": len(rows), "entries": rows}
 
 
-@app.get("/audit/hitl", dependencies=[Depends(verify_jwt_if_prod)])
+@app.get("/audit/hitl")
 async def list_hitl_audit_log(
     decision: str | None = None,
     limit: int = 50,
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
+    request: Request = None,  # type: ignore[assignment]  # FastAPI 注入；admin token 检测
 ) -> dict[str, Any]:
-    """列出 HITL 审计记录（按 decision 过滤，可选）。"""
-    rows = HitlAuditService.query_by_decision(decision, limit=limit) if decision else []
-    return {"count": len(rows), "entries": rows, "retention_years": HitlAuditService.retention_years()}
+    """列出 HITL 审计记录（V1.7.0 按角色过滤可见范围）。
+
+    鉴权：``identity`` 参数即 ``Depends(verify_jwt_if_prod)``（生产强制 JWT、
+    dev 放行；避免重复声明路由级依赖触发 FastAPI 去重）。
+    
+    PRD §四 矩阵「审计读」：
+    - 审计/运维/管理员 → 全部 thread（thread_ids=None 不过滤）；
+    - 调度员/知识管理员 → 仅本人 thread（``threads`` 表 owner 过滤）；
+    - dev 模式 → 全量（identity=None → 不过滤，与旧行为一致）。
+
+    行为修正（架构 §八 待明确事项 4）：``decision=None`` 由「空列表」改为
+    「返回全部（按角色过滤）」，支撑审计页默认全量展示。
+    """
+    thread_ids = _audit_visible_thread_ids(identity, request)
+    rows = HitlAuditService.query_by_decision_with_threads(
+        decision, limit=limit, thread_ids=thread_ids,
+    )
+    return {
+        "count": len(rows),
+        "entries": rows,
+        "retention_years": HitlAuditService.retention_years(),
+    }
 
 
-@app.get("/thread/{thread_id}", dependencies=[Depends(verify_jwt_if_prod)])
+@app.get("/thread/{thread_id}", dependencies=[Depends(verify_thread_ownership_if_prod)])
 async def get_thread(thread_id: str) -> dict[str, Any]:
-    """获取指定线程的对话历史（V1.5.1 T02: 改用 aget_state 兼容 AsyncSqliteSaver）。"""
+    """获取指定线程的对话历史（V1.5.1 T02: 改用 aget_state 兼容 AsyncSqliteSaver）。
+
+    V1.7.0 多用户：依赖升级为 ``verify_thread_ownership_if_prod``
+    （生产 owner 校验 + 懒登记；dev 放行）。
+    """
     if graph_builder is None:
         raise HTTPException(status_code=503, detail="Graph not ready")
 
@@ -804,9 +972,12 @@ async def get_thread(thread_id: str) -> dict[str, Any]:
     }
 
 
-@app.get("/diagnosis/{thread_id}/reasoning", dependencies=[Depends(verify_jwt_if_prod)])
+@app.get("/diagnosis/{thread_id}/reasoning", dependencies=[Depends(verify_thread_ownership_if_prod)])
 async def get_diagnosis_reasoning(thread_id: str) -> dict[str, Any]:
     """P0 可解释性 AI：拉取指定 thread_id 的完整推理链 JSON。
+
+    V1.7.0 多用户：依赖升级为 ``verify_thread_ownership_if_prod``
+    （生产 owner 校验 + 懒登记；dev 放行）。
 
     返回：
     - ``thread_id``         : 会话 ID
@@ -851,16 +1022,38 @@ class GrayscaleRollbackRequest(BaseModel):
 # ═══════════════════════════════════════════════════════
 # v1.4.0 多模型 LLM 端点（DashScope + DeepSeek）
 # ═══════════════════════════════════════════════════════
-
-
-class ModelSwitchRequest(BaseModel):
-    """模型切换请求体。"""
-    model_id: str
+# V1.7.0：ModelSwitchRequest 已上移至 api/schemas（新增可选 thread_id），
+# 此处直接复用 schemas 模型（见模块顶部 import）。
 
 
 @app.get("/models")
-async def list_models() -> dict[str, Any]:
-    """列出所有可用模型 + 当前/默认。"""
+async def list_models(
+    thread_id: str | None = None,
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
+) -> dict[str, Any]:
+    """列出所有可用模型 + 当前/默认（V1.7.0 支持会话维度）。
+
+    鉴权：``identity`` 参数即 ``Depends(verify_jwt_if_prod)``（生产强制 JWT、
+    dev 放行；避免重复声明路由级依赖触发 FastAPI 去重）。
+
+    - ``GET /models`` → ``{"available", "current": 全局, "default"}``（v1.6 兼容）；
+    - ``GET /models?thread_id=t-A`` → ``current`` 为该会话生效模型
+      （``threads.model_id ?? 全局``），并回显 ``thread_id`` 字段（US-2.1/2.2）。
+
+    生产模式：``thread_id`` 非空时先做 owner 校验（不能窥探他人会话模型）；
+    dev 放行（``verify_jwt_if_prod`` 语义）。
+    """
+    user_id = _identity_user_id(identity)
+    role = get_role(identity if isinstance(identity, dict) else None)
+    if thread_id:
+        ensure_thread_owned(thread_id, user_id, role)
+        current = get_model_for_thread(thread_id)
+        return {
+            "available": AVAILABLE_MODELS,
+            "current": current,
+            "default": get_default_model(),
+            "thread_id": thread_id,
+        }
     return {
         "available": AVAILABLE_MODELS,
         "current": get_current_model(),
@@ -868,54 +1061,72 @@ async def list_models() -> dict[str, Any]:
     }
 
 
-@app.post("/models/switch", dependencies=[Depends(verify_jwt_if_prod)])
-async def switch_model(req: ModelSwitchRequest) -> dict[str, Any]:
-    """切换当前 LLM 模型（运行时，进程级全局，影响所有会话，不持久化）。
+@app.post("/models/switch")
+async def switch_model(
+    req: ModelSwitchRequest,
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
+) -> dict[str, Any]:
+    """切换 LLM 模型（V1.7.0：全局 或 会话级）。
 
-    R2 回归修复：模型切换是主聊天界面（ModelSwitcher）内的普通用户操作，
-    与 interrupt/session 写端点同属用户级控制面，故复用 verify_jwt_if_prod
-    （与生产环境 fail-closed、dev 放行的口径一致）。此前误用 verify_admin_token，
-    而前端无 X-Admin-Token 来源（灰度面板是手动输入，模型切换无此 UI），
-    导致匿名与生产环境下均 401，活跃 UI 路径被打死。
+    鉴权：``identity`` 参数即 ``Depends(verify_jwt_if_prod)``（生产强制 JWT、
+    dev 放行；避免重复声明路由级依赖触发 FastAPI 去重）。
 
-    注意：_current_model 是 core/llm_client.py 中的进程级全局变量（RLock 保护，
-    非 per-session）。多用户部署下切换会影响所有会话的推理模型与成本——
-    这是既有设计、非本次引入；如需 per-session 隔离另行改造。
+    - ``POST /models/switch {model_id}``（无 thread_id）→ 进程级全局，
+      行为与 v1.6 完全一致（US-2.3 向后兼容）；
+    - ``POST /models/switch {model_id, thread_id}`` → 仅该会话生效
+      （``threads.model_id`` UPSERT；NULL=全局默认；US-2.1/2.2）。
+
+    生产模式：``thread_id`` 非空时 ``ensure_thread_owned``（不能切别人的
+    会话模型 → 403；懒登记优先于 404）；无 thread_id 仅 ``verify_jwt_if_prod``。
+
+    响应：无 thread_id 与 v1.6 一致 ``{"ok", "current"}``；有 thread_id 追加
+    ``"thread_id"`` 字段（向后兼容）。
     """
     try:
+        if req.thread_id:
+            user_id = _identity_user_id(identity)
+            role = get_role(identity if isinstance(identity, dict) else None)
+            ensure_thread_owned(req.thread_id, user_id, role)
+            set_model_for_thread(req.thread_id, req.model_id)
+            return {
+                "ok": True,
+                "current": req.model_id,
+                "thread_id": req.thread_id,
+            }
+        # 旧路径：全局（进程级）
         set_current_model(req.model_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "current": req.model_id}
 
 
-@app.get("/grayscale/status")
+@app.get("/grayscale/status", dependencies=[Depends(require_role(Role.OPERATOR, Role.ADMIN))])
 async def grayscale_status() -> dict[str, Any]:
-    """灰度状态（公开端点，无需 admin token）。"""
+    """灰度状态（V1.7.0 RBAC 收口：运维/管理员；admin token 等效；dev 放行）。"""
     return GrayscaleAdminService.get_status()
 
 
-@app.post("/grayscale/set", dependencies=[Depends(verify_admin_token)])
+@app.post("/grayscale/set", dependencies=[Depends(require_role(Role.OPERATOR, Role.ADMIN))])
 async def grayscale_set(
     req: GrayscaleSetRequest,
 ) -> dict[str, Any]:
-    """灰度切流（admin token 必填）。"""
+    """灰度切流（运维/管理员；admin token 等效管理员，二选一通过）。"""
     try:
         return GrayscaleAdminService.set_ratio(req.ratio, actor=req.actor or "admin")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/grayscale/history")
+@app.get("/grayscale/history", dependencies=[Depends(require_role(Role.OPERATOR, Role.ADMIN))])
 async def grayscale_history(limit: int = 20) -> dict[str, Any]:
-    """灰度切换历史。"""
+    """灰度切换历史（V1.7.0 RBAC 收口：运维/管理员）。"""
     rows = GrayscaleAdminService.get_history(limit=limit)
     return {"count": len(rows), "entries": rows}
 
 
-@app.get("/grayscale/metrics")
+@app.get("/grayscale/metrics", dependencies=[Depends(require_role(Role.OPERATOR, Role.ADMIN))])
 async def grayscale_metrics() -> dict[str, Any]:
-    """灰度统计指标（公开端点，无需 admin token）。
+    """灰度统计指标（V1.7.0 RBAC 收口：运维/管理员，衔接 R-1c）。
 
     包含：当前状态、累计切换次数、最近一次切换、回滚统计、
     5min 滚动窗口监控指标（samples/error_rate/p95）、ChromaSync 状态分布。
@@ -923,17 +1134,11 @@ async def grayscale_metrics() -> dict[str, Any]:
     return GrayscaleAdminService.get_metrics()
 
 
-@app.post("/grayscale/manual_rollback")
+@app.post("/grayscale/manual_rollback", dependencies=[Depends(require_role(Role.OPERATOR, Role.ADMIN))])
 async def grayscale_manual_rollback(
     req: GrayscaleRollbackRequest,
-    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
 ) -> dict[str, Any]:
-    """手动回滚（admin token 必填）。"""
-    if not GrayscaleAdminService.verify_admin_token(x_admin_token):
-        raise HTTPException(
-            status_code=403,
-            detail="Forbidden: invalid or missing X-Admin-Token header",
-        )
+    """手动回滚（运维/管理员；admin token 等效管理员，二选一通过）。"""
     return GrayscaleAdminService.manual_rollback(
         reason=req.reason or "manual", actor=req.actor or "admin",
     )
@@ -944,9 +1149,10 @@ async def grayscale_manual_rollback(
 # ═══════════════════════════════════════════════════════
 
 
-@app.get("/debug/sync_lag")
+@app.get("/debug/sync_lag", dependencies=[Depends(require_role(Role.OPERATOR, Role.ADMIN))])
 async def debug_sync_lag() -> dict[str, Any]:
-    """同步状态监控端点。"""
+    """同步状态监控端点（V1.7.0 RBAC 收口：运维/管理员；若外部监控脚本
+    依赖匿名读取，需在部署侧改配 token —— 架构 §八 待明确事项 5）。"""
     svc = get_sync_service()
     return {
         "queue_length": svc.get_queue_length(),
@@ -956,9 +1162,9 @@ async def debug_sync_lag() -> dict[str, Any]:
     }
 
 
-@app.post("/debug/sync_force", dependencies=[Depends(verify_admin_token)])
+@app.post("/debug/sync_force", dependencies=[Depends(require_role(Role.OPERATOR, Role.ADMIN))])
 async def debug_sync_force() -> dict[str, Any]:
-    """强制触发一次全量同步（仅开发模式）。"""
+    """强制触发一次全量同步（运维/管理员；admin token 等效）。"""
     svc = get_sync_service()
     try:
         import asyncio
@@ -973,10 +1179,10 @@ async def debug_sync_force() -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════
 
 
-@app.get("/admin/checkpoint-stats", dependencies=[Depends(verify_admin_token)])
+@app.get("/admin/checkpoint-stats", dependencies=[Depends(require_role(Role.OPERATOR, Role.ADMIN))])
 @limiter.limit(lambda: f"{settings.rate_limit_per_minute}/minute")
 async def checkpoint_stats(request: Request) -> dict[str, Any]:
-    """Checkpoint 统计（admin token 必填，T05 精细化鉴权 + T06 IP 限流）。
+    """Checkpoint 统计（V1.7.0 RBAC：运维/管理员；admin token 等效 + IP 限流）。
 
     返回字段（架构 §2.3.3 / §4.1 CheckpointStats schema）：
         - ``total_checkpoints``: checkpoints 表行数
@@ -1019,7 +1225,7 @@ async def checkpoint_stats(request: Request) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════
 
 
-@app.post("/sessions/{thread_id}/pause", response_model=ChatResponse, dependencies=[Depends(verify_jwt_if_prod)])
+@app.post("/sessions/{thread_id}/pause", response_model=ChatResponse, dependencies=[Depends(verify_thread_ownership_if_prod)])
 @safe_endpoint
 async def pause_session(thread_id: str, req: PauseRequest) -> ChatResponse:
     """暂停推理：注入 ``pause_signal`` 标志。
@@ -1046,7 +1252,7 @@ async def pause_session(thread_id: str, req: PauseRequest) -> ChatResponse:
     )
 
 
-@app.post("/sessions/{thread_id}/resume", response_model=ChatResponse, dependencies=[Depends(verify_jwt_if_prod)])
+@app.post("/sessions/{thread_id}/resume", response_model=ChatResponse, dependencies=[Depends(verify_thread_ownership_if_prod)])
 @safe_endpoint
 async def resume_session(thread_id: str, req: ResumeRequest) -> ChatResponse:
     """恢复推理：4 种 action 分支（架构 §2.2.2 + 兼容 v1.5.0 HITL）。
@@ -1065,6 +1271,8 @@ async def resume_session(thread_id: str, req: ResumeRequest) -> ChatResponse:
     """
     if graph_builder is None:
         raise HTTPException(status_code=503, detail="Graph not ready")
+    # M-2：恢复时透传会话生效模型（continue_from_pause 重跑用）
+    model_id = resolve_model(thread_id)
     with session_lock_manager.acquire(thread_id, timeout=5.0):
         result = await graph_builder.resume(
             thread_id=thread_id,
@@ -1072,6 +1280,7 @@ async def resume_session(thread_id: str, req: ResumeRequest) -> ChatResponse:
             reason=req.reason,
             edited_args=req.edited_args,
             edit_reason=req.edit_reason,
+            model_id=model_id,
         )
 
     # continue_from_pause 路径：result = {"status": "resumed"|"not_found", ...}
@@ -1106,7 +1315,7 @@ async def resume_session(thread_id: str, req: ResumeRequest) -> ChatResponse:
     )
 
 
-@app.post("/sessions/{thread_id}/rewind", response_model=ChatResponse, dependencies=[Depends(verify_jwt_if_prod)])
+@app.post("/sessions/{thread_id}/rewind", response_model=ChatResponse, dependencies=[Depends(verify_thread_ownership_if_prod)])
 @safe_endpoint
 async def rewind_session(thread_id: str, req: RewindRequest) -> ChatResponse:
     """回退到指定 step 并从此重跑（F2 主链路，架构 §2.2.3）。
@@ -1159,7 +1368,7 @@ async def rewind_session(thread_id: str, req: RewindRequest) -> ChatResponse:
     )
 
 
-@app.post("/sessions/{thread_id}/abort", response_model=ChatResponse, dependencies=[Depends(verify_jwt_if_prod)])
+@app.post("/sessions/{thread_id}/abort", response_model=ChatResponse, dependencies=[Depends(verify_thread_ownership_if_prod)])
 @safe_endpoint
 async def abort_session(thread_id: str, req: AbortRequest) -> ChatResponse:
     """强制中止推理：注入永久 ``abort_signal``（架构 §2.2.4）。
@@ -1184,6 +1393,154 @@ async def abort_session(thread_id: str, req: AbortRequest) -> ChatResponse:
         response="aborted" if ok else "failed",
         interrupt_required=False,
     )
+
+
+# ═══════════════════════════════════════════════════════
+# M-5 会话管理端点（会话列表 / 重命名 / 归档 / 恢复 / 软删）
+#   GET    /sessions?archived=0|1|2|all   — 本人会话列表（管理员跨用户全量）
+#   PATCH  /sessions/{thread_id}          — 重命名（body {title}）
+#   POST   /sessions/{thread_id}/archive  — 归档（archived=1）
+#   POST   /sessions/{thread_id}/restore  — 恢复（archived=0）
+#   DELETE /sessions/{thread_id}          — 软删（archived=2 + deleted_at）
+#
+# 安全口径（架构 session-mgmt §1.3 + §3.3）：
+#   - 全部写端点 handler 内联 ``ensure_thread_owned``（生产 owner 校验 +
+#     懒登记 + 软删 404 + 管理员跨用户放行），**不新增无鉴权路径**；
+#   - 软删会话（archived=2）在 ensure_thread_owned / auth 双路径均 404；
+#   - 与既有 ``POST /sessions/{id}/pause|resume|rewind|abort``、
+#     ``GET /sessions/{id}/events`` 段数/方法不同，**无路由冲突**。
+# ═══════════════════════════════════════════════════════
+
+
+def _is_admin_view(
+    identity: dict[str, Any] | None,
+    request: Request | None = None,
+) -> bool:
+    """判断是否管理员视角（跨用户全量）：管理员角色 或 admin token 有效。"""
+    role = get_role(identity if isinstance(identity, dict) else None)
+    if role == Role.ADMIN:
+        return True
+    if request is not None:
+        x_admin_token = request.headers.get("X-Admin-Token")
+        if x_admin_token and GrayscaleAdminService.verify_admin_token(x_admin_token):
+            return True
+    return False
+
+
+@app.get("/sessions")
+async def list_sessions(
+    archived: str = "0",
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
+    request: Request = None,  # type: ignore[assignment]  # FastAPI 注入；admin token 检测
+) -> SessionListResponse:
+    """M-5：会话列表（AC1-1 本人 / 管理员跨用户全量；updated_at 倒序）。
+
+    - ``archived=0``（默认）活跃；``1`` 归档；``2`` 删除（软删）；
+      ``all`` 全状态（管理员视角方便审计/恢复管理）。
+    - 生产：owner = JWT 用户；管理员角色/admin token → ``list_all`` 跨用户全量。
+    - dev：owner = "dev"（架构 §7.3）。
+    """
+    user_id = _identity_user_id(identity)
+    is_admin = _is_admin_view(identity, request)
+
+    if archived == "all":
+        archived_filter: int | None = None
+    else:
+        try:
+            archived_filter = int(archived)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=422, detail="archived 必须是 0|1|2|all"
+            ) from None
+        if archived_filter not in (0, 1, 2):
+            raise HTTPException(
+                status_code=422, detail="archived 必须是 0|1|2|all"
+            )
+
+    rows = (
+        ThreadStore().list_all(archived_filter)
+        if is_admin
+        else ThreadStore().list_by_owner(user_id, archived_filter)
+    )
+    sessions = [ThreadSummary(**r) for r in rows]
+    return SessionListResponse(sessions=sessions, total=len(sessions))
+
+
+@app.patch("/sessions/{thread_id}")
+async def rename_session(
+    thread_id: str,
+    req: SessionRenameRequest,
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
+) -> ThreadSummary:
+    """M-5：会话重命名（AC1-2；body ``{title}``，非空 ≤100）。
+
+    生产 owner 校验：他人会话 → 403；软删/未知（严格模式）→ 404。
+    """
+    user_id = _identity_user_id(identity)
+    role = get_role(identity if isinstance(identity, dict) else None)
+    ensure_thread_owned(thread_id, user_id, role)
+
+    ok = ThreadStore().rename_thread(thread_id, req.title)
+    if not ok:
+        # 理论不可达（ensure_thread_owned 已懒登记/404），防御性兜底
+        raise HTTPException(status_code=404, detail="会话不存在")
+    row = ThreadStore().get_thread(thread_id)
+    return ThreadSummary(**row)
+
+
+@app.post("/sessions/{thread_id}/archive")
+async def archive_session(
+    thread_id: str,
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
+) -> SessionActionResponse:
+    """M-5：归档会话（archived=1，从默认活跃列表移除，进归档视图）。"""
+    user_id = _identity_user_id(identity)
+    role = get_role(identity if isinstance(identity, dict) else None)
+    ensure_thread_owned(thread_id, user_id, role)
+
+    ok = ThreadStore().set_archived(thread_id, 1)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return SessionActionResponse(ok=True, thread_id=thread_id, archived=1)
+
+
+@app.post("/sessions/{thread_id}/restore")
+async def restore_session(
+    thread_id: str,
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
+) -> SessionActionResponse:
+    """M-5：恢复归档会话（archived=0，重新进入活跃列表）。
+
+    主理人决策：归档恢复按钮纳入本批（后端 restore 与前端恢复按钮一起做）。
+    """
+    user_id = _identity_user_id(identity)
+    role = get_role(identity if isinstance(identity, dict) else None)
+    ensure_thread_owned(thread_id, user_id, role)
+
+    ok = ThreadStore().set_archived(thread_id, 0)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return SessionActionResponse(ok=True, thread_id=thread_id, archived=0)
+
+
+@app.delete("/sessions/{thread_id}")
+async def delete_session(
+    thread_id: str,
+    identity: Annotated[dict[str, Any] | None, Depends(verify_jwt_if_prod)] = None,
+) -> SessionActionResponse:
+    """M-5：软删会话（archived=2 + deleted_at；保留 checkpoint 供审计追溯）。
+
+    软删后所有 thread 入口端点（/thread、/chat、/sessions/{id}/*、
+    /audit/hitl/{id} 等）一律 404（防泄漏「会话曾存在」）；物理删除属 P2。
+    """
+    user_id = _identity_user_id(identity)
+    role = get_role(identity if isinstance(identity, dict) else None)
+    ensure_thread_owned(thread_id, user_id, role)
+
+    ok = delete_thread(thread_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return SessionActionResponse(ok=True, thread_id=thread_id, archived=2)
 
 
 # ═══════════════════════════════════════════════════════

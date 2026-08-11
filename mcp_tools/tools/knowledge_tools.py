@@ -218,7 +218,8 @@ async def search_feature_intro(
             "title": it.get("title", ""),
             "kind": str(meta.get("kind") or ""),
             "content": it.get("content", ""),
-            "score": round(float(score), 3),
+            # M-3（K-2）：rerank 得分封顶 1.0，保持全链路 0-1 量纲
+            "score": round(min(1.0, float(score)), 3),
         })
 
     return {

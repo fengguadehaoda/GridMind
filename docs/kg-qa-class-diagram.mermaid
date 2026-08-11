@@ -1,0 +1,110 @@
+```mermaid
+classDiagram
+    class KnowledgeAnswer {
+        +str answer
+        +list citations
+        +list graph_paths
+        +float confidence
+        +bool refuse
+        +str refuse_reason
+        +list[SourceRef] sources
+        +GraphAnswer graph_answer  "M-4 可选"
+    }
+    class GraphAnswer {
+        +list[GraphAnswerNode] nodes
+        +list[GraphAnswerEdge] edges
+        +list[GraphPath] paths
+        +list[str] seed_ids
+        +float confidence
+        +str backend
+        +bool degraded
+        +float latency_ms
+        +list[SourceRef] sources
+    }
+    class GraphAnswerNode {
+        +str id
+        +str name
+        +str type
+        +dict properties
+        +int hop
+        +list[str] doc_ids
+        +float confidence
+    }
+    class GraphAnswerEdge {
+        +str source
+        +str target
+        +str relation_type
+        +float confidence
+        +str rule_id
+    }
+    class GraphPath {
+        +list[str] nodes
+        +list[str] relations
+        +int hops
+        +float confidence
+    }
+    class SourceRef {
+        +int chunk_id
+        +str doc_id
+        +str title
+        +str section
+        +float score
+        +str snippet
+    }
+    class GraphQAEngine {
+        +int MAX_NODES = 50
+        +int MAX_EDGES = 120
+        +int DEFAULT_HOPS = 3
+        +float HOP_PENALTY = 0.15
+        +GraphAnswer build(query, seed_ids, sources, hops, top_k)
+        -tuple _prune(nodes, edges, paths, top_k)
+        -float _confidence_for_hop(hop)
+        -list _resolve_doc_ids(entity_name, entity_type, sources)
+        -list _assemble_edges(opt_paths, nodes_by_id)
+    }
+    class RagEngine {
+        +RetrievalResult retrieve(query, top_k, thread_id)
+        +KnowledgeAnswer answer(query, top_k, thread_id)
+        +list _extract_entity_ids(text)
+    }
+    class KGClient {
+        +str current_backend_name
+        +tuple expand_with_optimizer(seeds, hops, relation_types, limit)
+    }
+    class KnowledgeGraph {
+        +tuple expand_entities(seed_ids, hops)
+        +list search_entities(query)
+    }
+    class ForceGraphView {
+        +props nodes, edges, tooltipFormatter, onClickNode
+        -init chart
+        -render()
+        -handleClick()
+    }
+    class TopologyGraph {
+        +delegate ForceGraphView
+    }
+    class GraphQAPanel {
+        +props graphAnswer, fallbackPaths, sources
+        -buildForceNodes()
+        -buildForceEdges()
+        -openDetail(node)
+    }
+    class RagPanel {
+        +props answer
+        -render GraphQAPanel
+    }
+
+    KnowledgeAnswer --> GraphAnswer : graph_answer
+    GraphAnswer --> GraphAnswerNode : nodes
+    GraphAnswer --> GraphAnswerEdge : edges
+    GraphAnswer --> GraphPath : paths
+    GraphAnswer --> SourceRef : sources
+    KnowledgeAnswer --> SourceRef : sources
+    RagEngine --> GraphQAEngine : answer() 组装
+    GraphQAEngine --> KGClient : expand_with_optimizer
+    KGClient --> KnowledgeGraph : NetworkXBackend 适配
+    RagPanel --> GraphQAPanel : graph_answer 存在
+    GraphQAPanel --> ForceGraphView : nodes/edges props
+    TopologyGraph --> ForceGraphView : 委托（对外 API 不变）
+```

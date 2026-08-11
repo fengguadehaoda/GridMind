@@ -1,0 +1,89 @@
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 调度员(前端)
+    participant CS as chatStore (web)
+    participant API as /chat/stream (api/main.py)
+    participant KA as knowledge_agent (agent_factory)
+    participant TOOL as query_knowledge_base (knowledge_tools)
+    participant RE as RagEngine.answer (core/rag_engine)
+    participant GQE as GraphQAEngine (core/kg_qa)
+    participant KGC as KGClient.expand_with_optimizer
+    participant SSE as SSE done 事件
+    participant RP as RagPanel (web)
+    participant GQP as GraphQAPanel (web)
+    participant FGV as ForceGraphView (web)
+
+    U->>CS: 提问「变压器过载会影响哪些设备」
+    CS->>API: POST /chat/stream (X-Display-Mode)
+    API->>KA: 进入 knowledge_agent 节点
+    KA->>TOOL: TOOL_CALL: query_knowledge_base(query=...)
+    TOOL->>RE: engine.answer(query)
+    RE->>RE: retrieve() → seed_ids / sources / graph_paths
+    RE->>GQE: build(query, seed_ids=result.seed_ids, sources=answer.sources, hops=3)
+    GQE->>KGC: expand_with_optimizer(seed_ids, hops=3, limit=100)
+    KGC-->>GQE: (entities, OptimizedPath[]{nodes, relations, cost.confidence, backend})
+    GQE->>GQE: 组装 nodes/edges/paths + hop + 置信度 + 剪枝(≤50/≤120) + degraded
+    GQE-->>RE: GraphAnswer
+    RE-->>TOOL: KnowledgeAnswer(graph_answer=GraphAnswer).model_dump()
+    TOOL-->>KA: 【query_knowledge_base】结果：{answer, sources, graph_answer, ...}
+    KA->>KA: _extract_knowledge_answer_from_results → KnowledgeAnswer(**parsed)
+    KA-->>API: update["knowledge_answer"] = ka
+    API->>SSE: done {knowledge_answer: ka.model_dump()}
+    SSE-->>CS: event.knowledge_answer
+    CS->>CS: attachContext({knowledgeAnswer})
+    CS-->>RP: msg.knowledgeAnswer
+    RP->>GQP: <GraphQAPanel :graph-answer :fallback-paths :sources>
+    GQP->>FGV: nodes/edges props（hop 色阶 / seed 高亮）
+    GQP->>GQP: 路径列表（跳数 + 置信度）
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as 调度员(演示模式)
+    participant KA as knowledge_agent (mock_mode)
+    participant MB as _build_mock_knowledge_answer (agent_factory)
+    participant MGA as _build_mock_graph_answer (新增 helper)
+    participant SSE as SSE done 事件
+    participant GQP as GraphQAPanel (web)
+    participant FGV as ForceGraphView (web)
+
+    U->>KA: 「变压器油温异常有哪些原因」(presentation 剧本内)
+    KA->>KA: mock_mode=True → _get_mock_response（正文含 📄 引用来源 + 🔗 图谱检索路径）
+    KA->>MB: _attach_knowledge_answer(last_user=..., answer_text=...)
+    MB->>MB: 命中 oil_temperature → _MOCK_KNOWLEDGE_SOURCES["oil_temperature"]
+    MB->>MGA: _build_mock_graph_answer("oil_temperature", sources=同批 SourceRef)
+    MGA-->>MB: GraphAnswer(nodes/edges/paths, backend="networkx", degraded=true, sources=同源)
+    MB-->>KA: KnowledgeAnswer(answer, sources, graph_answer=...)
+    KA-->>SSE: update["knowledge_answer"]
+    SSE-->>GQP: RagPanel → GraphQAPanel
+    GQP->>FGV: 渲染 mock 图谱（过载/油温/停机检修三剧本可见；fallback 无 graph_answer）
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant RE as RagEngine.answer
+    participant GQE as GraphQAEngine
+    participant KGC as KGClient
+    participant NX as NetworkXBackend (KnowledgeGraph)
+    participant KA as KnowledgeAnswer
+    participant RP as RagPanel (web)
+    participant GQP as GraphQAPanel (web)
+
+    alt Neo4j 未启用 / 宕机（常态）
+        KGC->>NX: _select_backend() → NetworkXBackend
+        GQE->>KGC: expand_with_optimizer(seed_ids, hops=3)
+        KGC->>NX: expand_entities(seed_ids, hops=3)
+        NX-->>GQE: entities + labeled paths
+        GQE-->>KA: backend="networkx", degraded=true（nodes/edges 非空 → 图谱正常渲染）
+        KA-->>RP: graph_answer 存在 → GraphQAPanel 渲染 + backend:networkx ⚠降级 徽标
+    else 图谱空 / 后端异常
+        GQE-->>KA: GraphAnswer(nodes=[], edges=[], paths=[]) → RagEngine 判定全空 → graph_answer=None
+        KA-->>RP: 无 graph_answer → 不渲染 GraphQAPanel（M-3 行为：sources + graph_paths collapse）
+    else graph_answer 存在但 nodes/edges 空（罕见）
+        GQE-->>KA: GraphAnswer(nodes=[], edges=[], paths=[...]) → 保留 attach
+        RP->>GQP: GraphQAPanel → 降级横幅 + 路径文字 chips（复用 graph_paths 样式）
+    end
+```

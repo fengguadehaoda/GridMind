@@ -36,9 +36,9 @@ function isColorBlindPalette(value: string | null): value is ColorBlindPalette {
   return value !== null && (COLORBLIND_PALETTES as readonly string[]).includes(value)
 }
 
-/** type guard: 校验 localStorage 读出的字符串是否合法 */
+/** type guard: 校验 localStorage 读出的字符串是否合法（V1.7.0 支持 'bigscreen'） */
 function isDisplayMode(value: string | null): value is DisplayMode {
-  return value === 'standard' || value === 'presentation'
+  return value === 'standard' || value === 'presentation' || value === 'bigscreen'
 }
 
 export const useDisplayStore = defineStore('display', () => {
@@ -59,6 +59,8 @@ export const useDisplayStore = defineStore('display', () => {
   // ── Getters ──
   const isStandard = computed(() => displayMode.value === 'standard')
   const isPresentation = computed(() => displayMode.value === 'presentation')
+  // V1.7.0 F-1：大屏模式 getter（仅扩展点，本批不接入任何大屏布局逻辑）
+  const isBigScreen = computed(() => displayMode.value === 'bigscreen')
   const isColorBlindActive = computed(() => colorBlind.value !== 'default')
 
   // ── Actions ──
@@ -134,6 +136,7 @@ export const useDisplayStore = defineStore('display', () => {
     // getters
     isStandard,
     isPresentation,
+    isBigScreen,
     isColorBlindActive,
     // actions
     setDisplayMode,

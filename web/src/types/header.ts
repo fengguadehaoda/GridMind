@@ -1,18 +1,23 @@
 /**
- * types/header.ts · 顶部 Header 重构 · 类型定义（T01/T02）
+ * types/header.ts · 顶部 Header 重构 · 类型定义（T01/T02 + M-5 T05）
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  * 架构决策（header-redesign-architecture-2026-08-06 §3.1）：
  *   - MenuDrawer 分组 / 状态卡片的 TypeScript 类型唯一事实源
  *   - 抽屉条目三态：component 型直接嵌入复用控件 / route 型跳转 / action 型执行回调
  *   - 扩展点：条目附带可选 keywords[] 供 P1-1 抽屉搜索（架构 §3.1 未列，属合理假设）
+ *
+ * M-5 T05 增量：
+ *   - ``MenuDrawerEntry`` 统一加可选 ``roles?: Role[]`` —— 路由/快捷区条目
+ *     按角色过滤（缺省 = 全员可见）；前端仅展示层 UX，安全由后端兜底。
  */
 import type { Component } from 'vue'
+import type { Role } from './index'
 
 /** 抽屉条目：component 型直接嵌入复用控件；route 型跳转；action 型执行回调 */
 export type MenuDrawerEntry =
-  | { id: string; type: 'component'; label: string; component: Component; keywords?: string[] }
-  | { id: string; type: 'route'; label: string; icon?: Component; route: string; keywords?: string[] }
-  | { id: string; type: 'action'; label: string; icon?: Component; action: () => void; keywords?: string[] }
+  | { id: string; type: 'component'; label: string; component: Component; keywords?: string[]; roles?: Role[] }
+  | { id: string; type: 'route'; label: string; icon?: Component; route: string; keywords?: string[]; roles?: Role[] }
+  | { id: string; type: 'action'; label: string; icon?: Component; action: () => void; keywords?: string[]; roles?: Role[] }
 
 /** 抽屉分组：视图 / 主题 / 系统 / 调试 */
 export interface MenuDrawerGroup {

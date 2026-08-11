@@ -19,111 +19,120 @@
     <!-- CRT 扫描线（仅暗主题可见）—— v1.5.0 T02：标准模式 forceOff，演示模式恢复 -->
     <ScanlineOverlay :opacity="0.4" :speed="8" :force-off="isStandard" />
 
-    <!-- F1 推理控制栏：仅在有活跃 session 时显示（T02 集成） -->
-    <ReasoningControlBar v-if="reasoning.isActive" />
+    <!-- M-5 T03：外层改 flex row —— 左侧会话侧栏 + 右侧原内容 -->
+    <div class="chat-view__body">
+      <!-- 会话侧栏（新建/列表/归档/导出） -->
+      <SessionSidebar />
 
-    <!-- T05 · F4 HITL 弹窗前置（架构 §1.4 + §3.4）：
-         - 在控制栏下、消息列表前的对话流顶部
-         - sticky top: 80px（Header 高度 60px + 间距 20px）+ z-index 100（toast 1000 > 弹窗 100）
-         - 自定义 div 容器（替换原 el-dialog）+ focus trap（4 按钮循环）+ backdrop blur
-         - 三按钮（拒绝/仅批准/修改后批准）+ 二次确认（×/Esc/点遮罩）-->
-    <HitlEditDialog
-      v-model="showHitl"
-      :interrupt-node="store.interruptNode"
-      :interrupt-msg="store.interruptMsg"
-      :thread-id="store.pendingThreadId"
-      :interrupt-args="store.interruptArgs"
-      :busy="store.hitlBusy"
-      :safety-reject="store.hitlSafetyReject"
-      @approve="onApprove"
-      @reject="onReject"
-      @edit-approve="onEditApprove"
-    />
+      <!-- 右侧：推理控制栏 + HITL 弹窗 + 消息列表 + 输入区（原布局不变） -->
+      <div class="chat-view__main">
+        <!-- F1 推理控制栏：仅在有活跃 session 时显示（T02 集成） -->
+        <ReasoningControlBar v-if="reasoning.isActive" />
 
-    <!-- 消息列表 -->
-    <div ref="scrollRef" class="message-list" data-tour="chat-history">
-      <!-- 空白引导 -->
-      <div v-if="!messages.length" class="welcome">
-        <div class="welcome-illustration">
-          <svg width="120" height="120" viewBox="0 0 120 120" fill="none" aria-hidden="true">
-            <polygon
-              points="60,8 104,32 104,72 60,96 16,72 16,32"
-              fill="none"
-              stroke="var(--brand-primary)"
-              stroke-width="1.5"
-              stroke-opacity="0.5"
-            />
-            <polygon
-              points="60,20 92,38 92,68 60,86 28,68 28,38"
-              fill="var(--brand-primary-soft)"
-              stroke="var(--brand-primary)"
-              stroke-width="1"
-              stroke-opacity="0.4"
-            />
-            <path
-              d="M60 32 L78 64 L60 76 L42 64 Z"
-              fill="var(--brand-primary)"
-            />
-            <circle cx="60" cy="56" r="4" fill="var(--brand-accent)" />
-            <circle cx="60" cy="8" r="2.5" fill="var(--brand-primary)" />
-            <circle cx="104" cy="32" r="2.5" fill="var(--brand-primary)" fill-opacity="0.6" />
-            <circle cx="104" cy="72" r="2.5" fill="var(--brand-accent)" />
-            <circle cx="60" cy="96" r="2.5" fill="var(--brand-primary)" fill-opacity="0.6" />
-            <circle cx="16" cy="72" r="2.5" fill="var(--brand-primary)" fill-opacity="0.6" />
-            <circle cx="16" cy="32" r="2.5" fill="var(--brand-primary)" />
-          </svg>
-        </div>
-        <h2 class="welcome-title">灵枢电网</h2>
-        <p class="welcome-sub">GridMind · 在下方输入问题或点击快捷指令开始演示</p>
-
-        <div class="welcome-toolbar" data-tour="chat-model-switcher">
-          <ModelSwitcher />
-        </div>
-
-        <div data-tour="chat-demo-shortcuts">
-          <DemoShortcuts
-            :shortcuts="store.demoShortcuts"
-            :loading="store.loading"
-            @send="onShortcutSend"
-          />
-        </div>
-      </div>
-
-      <TransitionGroup name="slide-up">
-        <MessageBubble
-          v-for="msg in messages"
-          :key="msg.id"
-          :msg="msg"
+        <!-- T05 · F4 HITL 弹窗前置（架构 §1.4 + §3.4）：
+             - 在控制栏下、消息列表前的对话流顶部
+             - sticky top: 80px（Header 高度 60px + 间距 20px）+ z-index 100（toast 1000 > 弹窗 100）
+             - 自定义 div 容器（替换原 el-dialog）+ focus trap（4 按钮循环）+ backdrop blur
+             - 三按钮（拒绝/仅批准/修改后批准）+ 二次确认（×/Esc/点遮罩）-->
+        <HitlEditDialog
+          v-model="showHitl"
+          :interrupt-node="store.interruptNode"
+          :interrupt-msg="store.interruptMsg"
+          :thread-id="store.pendingThreadId"
+          :interrupt-args="store.interruptArgs"
+          :busy="store.hitlBusy"
+          :safety-reject="store.hitlSafetyReject"
+          @approve="onApprove"
+          @reject="onReject"
+          @edit-approve="onEditApprove"
         />
-      </TransitionGroup>
 
-      <div ref="bottomRef" />
-    </div>
+        <!-- 消息列表 -->
+        <div ref="scrollRef" class="message-list" data-tour="chat-history">
+          <!-- 空白引导 -->
+          <div v-if="!messages.length" class="welcome">
+            <div class="welcome-illustration">
+              <svg width="120" height="120" viewBox="0 0 120 120" fill="none" aria-hidden="true">
+                <polygon
+                  points="60,8 104,32 104,72 60,96 16,72 16,32"
+                  fill="none"
+                  stroke="var(--brand-primary)"
+                  stroke-width="1.5"
+                  stroke-opacity="0.5"
+                />
+                <polygon
+                  points="60,20 92,38 92,68 60,86 28,68 28,38"
+                  fill="var(--brand-primary-soft)"
+                  stroke="var(--brand-primary)"
+                  stroke-width="1"
+                  stroke-opacity="0.4"
+                />
+                <path
+                  d="M60 32 L78 64 L60 76 L42 64 Z"
+                  fill="var(--brand-primary)"
+                />
+                <circle cx="60" cy="56" r="4" fill="var(--brand-accent)" />
+                <circle cx="60" cy="8" r="2.5" fill="var(--brand-primary)" />
+                <circle cx="104" cy="32" r="2.5" fill="var(--brand-primary)" fill-opacity="0.6" />
+                <circle cx="104" cy="72" r="2.5" fill="var(--brand-accent)" />
+                <circle cx="60" cy="96" r="2.5" fill="var(--brand-primary)" fill-opacity="0.6" />
+                <circle cx="16" cy="72" r="2.5" fill="var(--brand-primary)" fill-opacity="0.6" />
+                <circle cx="16" cy="32" r="2.5" fill="var(--brand-primary)" />
+              </svg>
+            </div>
+            <h2 class="welcome-title">灵枢电网</h2>
+            <p class="welcome-sub">GridMind · 在下方输入问题或点击快捷指令开始演示</p>
 
-    <!-- 输入区 -->
-    <div class="input-area" data-tour="chat-input">
-      <div class="input-bar">
-        <el-input
-          v-model="inputText"
-          type="textarea"
-          :rows="1"
-          :autosize="{ minRows: 1, maxRows: 4 }"
-          placeholder="输入电力运维相关的问题…"
-          :disabled="store.loading"
-          @keydown.enter.prevent="onSend"
-          resize="none"
-          class="chat-input"
-        />
-        <el-button
-          type="primary"
-          :icon="Promotion"
-          :loading="store.loading"
-          :disabled="!inputText.trim()"
-          @click="onSend"
-          class="send-btn"
-        >
-          发送
-        </el-button>
+            <div class="welcome-toolbar" data-tour="chat-model-switcher">
+              <ModelSwitcher />
+            </div>
+
+            <div data-tour="chat-demo-shortcuts">
+              <DemoShortcuts
+                :shortcuts="store.demoShortcuts"
+                :loading="store.loading"
+                @send="onShortcutSend"
+              />
+            </div>
+          </div>
+
+          <TransitionGroup name="slide-up">
+            <MessageBubble
+              v-for="msg in messages"
+              :key="msg.id"
+              :msg="msg"
+            />
+          </TransitionGroup>
+
+          <div ref="bottomRef" />
+        </div>
+
+        <!-- 输入区 -->
+        <div class="input-area" data-tour="chat-input">
+          <div class="input-bar">
+            <el-input
+              v-model="inputText"
+              type="textarea"
+              :rows="1"
+              :autosize="{ minRows: 1, maxRows: 4 }"
+              placeholder="输入电力运维相关的问题…"
+              :disabled="store.loading"
+              @keydown.enter.prevent="onSend"
+              resize="none"
+              class="chat-input"
+            />
+            <el-button
+              type="primary"
+              :icon="Promotion"
+              :loading="store.loading"
+              :disabled="!inputText.trim()"
+              @click="onSend"
+              class="send-btn"
+            >
+              发送
+            </el-button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -136,6 +145,8 @@ import { Promotion } from '@element-plus/icons-vue'
 import { useChatStore } from '../stores/chatStore'
 import { useDisplay } from '../composables/useDisplay'
 import { useReasoningStore } from '../stores/reasoning'
+// V1.7.0 M-2：会话级模型绑定（激活会话变化 → modelStore.setActiveThread）
+import { useModelStore } from '../stores/modelStore'
 // F2 修复：audit store SSE handler 接线（hitl_interrupt / hitl_resolved 实时推送）
 import { useAuditStore } from '../stores/audit'
 import { useSessionStatsStore } from '../stores/sessionStats'
@@ -152,8 +163,20 @@ import ScanlineOverlay from './background/ScanlineOverlay.vue'
 import ReasoningControlBar from './reasoning/ReasoningControlBar.vue'
 // T05 · F4 HITL 弹窗前置
 import HitlEditDialog from './HitlEditDialog.vue'
+// M-5 T03：会话侧栏
+import SessionSidebar from './SessionSidebar.vue'
 
 const store = useChatStore()
+// V1.7.0 M-2：激活会话变化时同步模型 store（当前会话生效模型）
+const modelStore = useModelStore()
+// 会话激活/新建/重置时刷新模型绑定（US-2.1/2.2；无激活会话 → 走全局 US-2.3）
+watch(
+  () => store.threadId,
+  (tid) => {
+    void modelStore.setActiveThread(tid || null)
+  },
+  { immediate: true },
+)
 // v1.5.0 T02：解构出 bgIntensity / isStandard（storeToRefs 保留响应性）
 const { bgIntensity, isStandard } = useDisplay()
 // v1.5.1 T02：reasoning store（用于 ReasoningControlBar + SSE 事件映射）
@@ -442,6 +465,10 @@ function onShortcutSend(message: string) {
 
 onMounted(() => {
   scrollToBottom()
+  // M-5 T03：进入对话页拉一次会话列表（架构时序 4.1）
+  if (!store.sessionsLoading && store.sessions.length === 0) {
+    void store.fetchSessions()
+  }
 })
 </script>
 
@@ -450,6 +477,25 @@ onMounted(() => {
   position: relative;
   display: flex;
   flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* M-5 T03：外层 flex row —— 左侧会话侧栏 + 右侧主内容（背景层之下） */
+.chat-view__body {
+  position: relative;
+  z-index: calc(var(--z-base) + 1);
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  min-height: 0;
+}
+
+.chat-view__main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
   height: 100%;
   overflow: hidden;
 }

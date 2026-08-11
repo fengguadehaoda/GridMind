@@ -25,7 +25,15 @@ from langgraph.types import interrupt
 from loguru import logger
 
 from api.config import settings
-from api.schemas import AgentState
+from api.schemas import (
+    AgentState,
+    GraphAnswer,
+    GraphAnswerEdge,
+    GraphAnswerNode,
+    GraphPath,
+    KnowledgeAnswer,
+    SourceRef,
+)
 from prompts.system_prompts import get_prompt
 
 # ── DashScope 可用性检测（T1 修复）─────────────────────
@@ -56,11 +64,19 @@ async def _degrade_to_mock(agent_name: str, state: AgentState, reason: str) -> d
         agent_name, state, mock_reply,
         user_msg=_last_user_message(state),
     )
-    return {
+    update = {
         "messages": state.messages + [_with_meta(final, agent_name, state.thread_id)],
         "current_agent": agent_name,
         "error": None,
     }
+    # M-3（AC-4）：knowledge_agent 真实路径无 Key 自动降级 mock 时同样带结构化来源
+    if agent_name == "knowledge_agent":
+        update = await _attach_knowledge_answer(
+            agent_name, update,
+            last_user=_last_user_message(state),
+            answer_text=mock_reply,
+        )
+    return update
 
 # ── 高危工具清单（触发 HITL，需人工确认）─────────────────
 # 原本定义在 graph.py，这里统一定义以避免循环依赖，graph.py 直接复用。
@@ -107,6 +123,10 @@ AGENT_TOOLS_MAP: dict[str, list[str]] = {
         # 用户问「5 个核心视图/功能介绍/引导/演示」时优先调用，
         # 内部已做意图门控：非功能介绍类问题返回 count=0 由上层兜底。
         "search_feature_intro",
+        # M-4 P0-3：图谱问答工具（kg_apply_rules 仅注册；规则推导边默认不启用
+        # ——enable_inference_engine=False 时天然返回空，决策 3）
+        "kg_multi_hop_reason",
+        "kg_apply_rules",
     ],
 }
 
@@ -373,8 +393,10 @@ def _is_demo_script_match(last_user: str) -> bool:
     if is_high_risk and not is_device_hint:
         return False
     # P1-2：白名单正向匹配（关键词同样归一化空白）
+    # P2-B（R-1d）：白名单关键字统一 lower() 归一化——与上方高危设备标识例外门
+    # （normalized_lower）一致，保证 'TR-001 状态' 与 'tr-001 状态' 均命中剧本。
     return any(
-        _normalize_ws(kw) in normalized
+        _normalize_ws(kw).lower() in normalized_lower
         for kw in _DEMO_SCRIPT_KEYWORDS
     )
 
@@ -402,6 +424,498 @@ def _format_mock_tool_answer(results: list[str]) -> str:
     return "【诊断 Agent】已处理高危操作请求：\n\n" + "\n".join(results)
 
 
+# ═══════════════════════════════════════════════════════
+# M-3：mock 知识剧本结构化来源（K-4 —— 一处定义，与正文「📄 引用来源」一致）
+# ═══════════════════════════════════════════════════════
+
+#: mock 知识剧本 sources（与 ``_get_mock_response`` 正文「📄 引用来源」行完全一致）。
+#: doc_id 为演示用途（``user-upload:mock-*``），不要求真实存在于 DB（K-4）。
+_MOCK_KNOWLEDGE_SOURCES: dict[str, list[dict[str, Any]]] = {
+    "oil_temperature": [
+        {
+            "doc_id": "user-upload:mock-transformer-rules",
+            "filename": "变压器运行规程.md",
+            "title": "变压器运行规程",
+            "source": "user-upload/变压器运行规程.md",
+            "section": "4.2",
+            "score": 0.87,
+            "snippet": "油温异常分级：变压器顶层油温一般不得超过 85°C，超过 80°C 时应加强监视并及时查明原因……",
+            "content_excerpt": (
+                "变压器油温异常分级是判断变压器运行状态的重要依据。第 4.2 节规定："
+                "顶层油温一般不得超过 85°C，超过 80°C 时应加强监视并及时查明原因。"
+                "油温异常按严重程度分为三级：一级为油温超过 85°C 但未达 95°C，"
+                "此时应加强巡视并安排停电检查；二级为油温超过 95°C，应立即减载并"
+                "申请停电处理；三级为油温超过 105°C 或伴随瓦斯保护动作，应立即停运"
+                "并通知检修。变压器运行中应定期检查散热器、风扇和油泵的运行状态，"
+                "发现油温异常升高时应结合负载率、环境温度和油色谱分析结果综合判断"
+                "故障原因，防止因冷却系统故障或内部故障导致绝缘加速老化。"
+            ),
+            "chunk_index": 3,
+            "total_chunks": 12,
+        },
+        {
+            "doc_id": "user-upload:mock-diagnosis-handbook",
+            "filename": "电力设备故障诊断手册.md",
+            "title": "电力设备故障诊断手册",
+            "source": "user-upload/电力设备故障诊断手册.md",
+            "section": None,
+            "score": 0.72,
+            "snippet": "变压器油温异常原因分析：负载过重、冷却系统故障、绝缘老化、连接不良……",
+            "content_excerpt": (
+                "变压器油温异常的常见原因包括：负载过重导致发热增加；冷却系统故障"
+                "如散热器堵塞、风扇或油泵故障导致散热能力下降；绕组绝缘老化导致"
+                "介质损耗增大；分接开关或引线接触不良产生局部过热。诊断时首先核对"
+                "当前负载率与环境温度，判断是否属于正常运行条件下的温升；随后检查"
+                "冷却系统运行状态，确认油泵、风扇是否正常运转；最后安排油色谱分析"
+                "（总烃、乙炔、CO、CO2 等特征气体），判断是否存在内部放电或过热"
+                "故障。若油温持续异常且伴随特征气体增长，应尽早安排停电检修，避免"
+                "故障扩大导致变压器损坏。"
+            ),
+            "chunk_index": 5,
+            "total_chunks": 20,
+        },
+    ],
+    "overload": [
+        {
+            "doc_id": "user-upload:mock-transformer-rules",
+            "filename": "变压器运行规程.md",
+            "title": "变压器运行规程",
+            "source": "user-upload/变压器运行规程.md",
+            "section": "6.1",
+            "score": 0.85,
+            "snippet": "过载运行限制：正常周期负载不超过 130% 额定容量、紧急长期负载不超过 140%……",
+            "content_excerpt": (
+                "变压器过载运行时间限制（依据 IEC 60076 标准）是第 6.1 节的核心内容。"
+                "正常周期负载（不超过 130% 额定容量）持续时间不得超过 2 小时；紧急"
+                "长期负载（不超过 140%）不得超过 30 分钟；紧急短期负载（不超过 150%）"
+                "不得超过 10 分钟。过载运行期间应密切监视顶层油温、绕组热点温度和"
+                "冷却系统运行状态，必要时投入备用冷却器。过载会加速绝缘老化，缩短"
+                "设备寿命，严重时可能引发热故障甚至损坏变压器。调度人员应根据负载"
+                "预测及时调整负荷分配，避免长时间过载运行；当负载超过紧急短期负载"
+                "限值时应立即减载或申请转移负荷。"
+            ),
+            "chunk_index": 8,
+            "total_chunks": 12,
+        },
+        {
+            "doc_id": "user-upload:mock-diagnosis-handbook",
+            "filename": "电力设备故障诊断手册.md",
+            "title": "电力设备故障诊断手册",
+            "source": "user-upload/电力设备故障诊断手册.md",
+            "section": None,
+            "score": 0.66,
+            "snippet": "过载章节：长期过载会导致绕组热点温度升高、绝缘老化加速……",
+            "content_excerpt": (
+                "过载章节分析了变压器过载运行对设备寿命的影响机理。长期过载导致"
+                "绕组热点温度升高，绝缘材料在高温下加速老化，根据热老化定律，"
+                "绕组热点温度每升高 6°C，绝缘寿命约缩短一半。过载还会引起连接"
+                "部位接触电阻增大、局部过热，甚至引发电气连接故障。诊断时应结合"
+                "负载曲线、油温记录和油色谱数据综合评估过载危害程度，并给出减载"
+                "建议或负荷转移方案。对于频繁过载的变压器，应缩短巡检周期，加强"
+                "对绕组温度、油温和冷却系统的监测，必要时安排停电检修和绝缘检测。"
+            ),
+            "chunk_index": 9,
+            "total_chunks": 20,
+        },
+    ],
+    "shutdown": [
+        {
+            "doc_id": "user-upload:mock-transformer-rules",
+            "filename": "变压器运行规程.md",
+            "title": "变压器运行规程",
+            "source": "user-upload/变压器运行规程.md",
+            "section": "6.2",
+            "score": 0.82,
+            "snippet": "停机检修流程：办理工作票、断开高低压侧断路器、验电接地、挂牌……",
+            "content_excerpt": (
+                "变压器停机检修必须严格执行第 6.2 节规定的安全流程。检修前应办理"
+                "工作票并履行审批手续，明确检修内容、安全措施和监护人；检修时应"
+                "先断开高压侧和低压侧断路器，拉开隔离开关并可靠接地，验电确认无电"
+                "后悬挂「禁止合闸，有人工作」标示牌。检修内容一般包括：油色谱分析"
+                "与油质检测、绕组绝缘电阻与介质损耗测量、分接开关检查、冷却系统"
+                "检修、套管及密封件检查等。检修完成后应进行交接试验，确认各项指标"
+                "合格后方可恢复送电。全过程应做好检修记录并存档，便于后续追溯。"
+            ),
+            "chunk_index": 10,
+            "total_chunks": 12,
+        },
+        {
+            "doc_id": "user-upload:mock-diagnosis-handbook",
+            "filename": "电力设备故障诊断手册.md",
+            "title": "电力设备故障诊断手册",
+            "source": "user-upload/电力设备故障诊断手册.md",
+            "section": None,
+            "score": 0.6,
+            "snippet": "检修章节：停机检修前应完成故障定位与风险评估……",
+            "content_excerpt": (
+                "检修章节强调停机检修前的故障定位与风险评估。检修前应通过油色谱"
+                "分析、电气试验和运行记录定位故障部位，评估故障严重程度与检修"
+                "紧迫性，据此制定检修方案并准备备品备件。检修过程中应重点关注"
+                "绕组、分接开关、套管、冷却系统等易发故障部位，对发现的异常进行"
+                "详细记录并分析成因。检修完成后应进行交接试验，包括绝缘电阻、"
+                "介质损耗、直流电阻等测试，确认设备状态合格后办理工作票终结并"
+                "恢复送电。所有检修记录、试验数据和结论应归档保存，为设备状态"
+                "评估和后续检修计划提供依据。"
+            ),
+            "chunk_index": 11,
+            "total_chunks": 20,
+        },
+    ],
+    "fallback": [
+        {
+            "doc_id": "user-upload:mock-equipment-rules",
+            "filename": "电力设备运行规程.md",
+            "title": "电力设备运行规程",
+            "source": "user-upload/电力设备运行规程.md",
+            "section": None,
+            "score": 0.55,
+            "snippet": "通用章节：设备运行维护应遵循相关规程，加强巡视与定期试验……",
+            "content_excerpt": (
+                "电力设备运行规程通用章节规定了各类电力设备的运行维护基本要求。"
+                "设备运行期间应加强巡视检查，按照规定的周期开展定期试验与检修，"
+                "及时发现并消除设备隐患。运行维护工作应严格执行工作票、操作票"
+                "制度，落实安全组织措施和技术措施，防止误操作和人身伤害。对于"
+                "异常运行工况应及时记录并上报，必要时申请停电处理。设备台账、"
+                "运行记录、试验报告和检修记录应完整归档，为设备全生命周期管理"
+                "提供数据支撑。具体设备的详细运行规程请参阅对应专业手册，如"
+                "《变压器运行规程》《断路器运行规程》等专项规定。"
+            ),
+            "chunk_index": 0,
+            "total_chunks": 8,
+        },
+    ],
+}
+
+
+def _truncate_text(text: str, max_len: int = 120) -> str:
+    """截断为最多 ``max_len`` 字符的摘要；超长追加 ``…``。"""
+    text = (text or "").strip().replace("\n", " ")
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rstrip() + "…"
+
+
+# ═══════════════════════════════════════════════════════
+# M-4（P1-3，决策 7）：mock 图谱答案 —— 仅覆盖 油温/过载/停机检修 三剧本
+# ═══════════════════════════════════════════════════════
+
+#: mock 图谱剧本（nodes/edges/paths 与 ``_get_mock_response`` 正文
+#: 「🔗 图谱检索路径」语义一致——同一批实体与关系；hop 为距 seed 跳数，
+#: 超出 3 跳截断为 3（前端 hops 上限 3，面板标注截断）。
+_MOCK_GRAPH_SCRIPTS: dict[str, dict[str, Any]] = {
+    "oil_temperature": {
+        "seed_ids": ["e-transformer"],
+        "nodes": [
+            {"id": "e-transformer", "name": "变压器", "type": "设备", "hop": 0},
+            {"id": "e-oil-monitor", "name": "油温监控", "type": "部件", "hop": 1},
+            {"id": "e-oiltemp-abnormal", "name": "油温异常告警", "type": "告警", "hop": 2},
+            {"id": "e-overload", "name": "负载过重", "type": "故障", "hop": 3},
+            {"id": "e-cooling-fault", "name": "冷却系统故障", "type": "故障", "hop": 3},
+            {"id": "e-insulation-aging", "name": "绝缘老化", "type": "故障", "hop": 3},
+        ],
+        "edges": [
+            {"source": "e-transformer", "target": "e-oil-monitor", "relation_type": "包含"},
+            {"source": "e-oil-monitor", "target": "e-oiltemp-abnormal", "relation_type": "触发"},
+            {"source": "e-oiltemp-abnormal", "target": "e-overload", "relation_type": "关联"},
+            {"source": "e-oiltemp-abnormal", "target": "e-cooling-fault", "relation_type": "关联"},
+            {"source": "e-oiltemp-abnormal", "target": "e-insulation-aging", "relation_type": "关联"},
+        ],
+        "paths": [
+            {"nodes": ["e-transformer", "e-oil-monitor", "e-oiltemp-abnormal"], "relations": ["包含", "触发"]},
+            {"nodes": ["e-transformer", "e-oil-monitor", "e-oiltemp-abnormal", "e-overload"], "relations": ["包含", "触发", "关联"]},
+            {"nodes": ["e-transformer", "e-oil-monitor"], "relations": ["包含"]},
+        ],
+    },
+    "overload": {
+        "seed_ids": ["e-overload"],
+        "nodes": [
+            {"id": "e-overload", "name": "过载", "type": "故障", "hop": 0},
+            {"id": "e-overtemp", "name": "温度升高", "type": "故障", "hop": 1},
+            {"id": "e-insulation-aging", "name": "绝缘老化", "type": "故障", "hop": 2},
+            {"id": "e-life-shortened", "name": "设备寿命缩短", "type": "影响", "hop": 3},
+            {"id": "e-thermal-fault", "name": "热故障", "type": "故障", "hop": 3},
+            {"id": "e-derating", "name": "减载措施", "type": "处置", "hop": 1},
+        ],
+        "edges": [
+            {"source": "e-overload", "target": "e-overtemp", "relation_type": "触发"},
+            {"source": "e-overtemp", "target": "e-insulation-aging", "relation_type": "加速"},
+            {"source": "e-insulation-aging", "target": "e-life-shortened", "relation_type": "导致"},
+            {"source": "e-life-shortened", "target": "e-thermal-fault", "relation_type": "严重"},
+            {"source": "e-overload", "target": "e-derating", "relation_type": "处置"},
+        ],
+        "paths": [
+            {"nodes": ["e-overload", "e-overtemp", "e-insulation-aging"], "relations": ["触发", "加速"]},
+            {"nodes": ["e-overload", "e-overtemp", "e-insulation-aging", "e-life-shortened"], "relations": ["触发", "加速", "导致"]},
+            {"nodes": ["e-overload", "e-derating"], "relations": ["处置"]},
+        ],
+    },
+    "shutdown": {
+        "seed_ids": ["e-shutdown"],
+        "nodes": [
+            {"id": "e-shutdown", "name": "停机检修", "type": "处置", "hop": 0},
+            {"id": "e-work-ticket", "name": "工作票审批", "type": "规程", "hop": 1},
+            {"id": "e-grounding", "name": "验电接地", "type": "处置", "hop": 2},
+            {"id": "e-testing", "name": "检修试验", "type": "处置", "hop": 3},
+            {"id": "e-restore", "name": "恢复送电", "type": "处置", "hop": 3},
+        ],
+        "edges": [
+            {"source": "e-shutdown", "target": "e-work-ticket", "relation_type": "前置"},
+            {"source": "e-work-ticket", "target": "e-grounding", "relation_type": "隔离"},
+            {"source": "e-grounding", "target": "e-testing", "relation_type": "执行"},
+            {"source": "e-testing", "target": "e-restore", "relation_type": "恢复"},
+        ],
+        "paths": [
+            {"nodes": ["e-shutdown", "e-work-ticket", "e-grounding"], "relations": ["前置", "隔离"]},
+            {"nodes": ["e-shutdown", "e-work-ticket", "e-grounding", "e-testing"], "relations": ["前置", "隔离", "执行"]},
+        ],
+    },
+}
+
+
+def _build_mock_graph_answer(
+    script: str, sources: list[SourceRef],
+) -> GraphAnswer | None:
+    """构造 mock 图谱答案（P1-3，决策 7）。
+
+    - 仅覆盖 油温(oil_temperature) / 过载(overload) / 停机检修(shutdown) 三剧本；
+      fallback / feature-intro → 返回 None（调用方不 attach）；
+    - nodes/edges/paths 与正文「🔗 图谱检索路径」语义一致；
+    - 置信度口径与 ``GraphQAEngine`` 完全一致（seed=1.0；路径
+      ``max(0, 1-0.15*hops)``；边 = min(端点)；综合 = 1/(hops+1) 加权平均）；
+    - ``sources`` 与同轮 :class:`KnowledgeAnswer` **同一份** SourceRef 列表
+      （US-5 同源）。
+    """
+    data = _MOCK_GRAPH_SCRIPTS.get(script)
+    if data is None:
+        return None
+    seed_ids = list(data["seed_ids"])
+    all_doc_ids = [s.doc_id for s in sources if s.doc_id]
+
+    nodes: list[GraphAnswerNode] = []
+    for n in data["nodes"]:
+        hop = int(n.get("hop") or 0)
+        nodes.append(GraphAnswerNode(
+            id=n["id"],
+            name=n["name"],
+            type=n.get("type") or "unknown",
+            properties=n.get("properties") or {},
+            hop=hop,
+            doc_ids=list(all_doc_ids),
+            confidence=1.0 if hop == 0 else round(max(0.0, 1.0 - 0.15 * hop), 3),
+        ))
+    nodes_by_id = {n.id: n for n in nodes}
+
+    edges: list[GraphAnswerEdge] = []
+    for e in data["edges"]:
+        src = nodes_by_id.get(e["source"])
+        tgt = nodes_by_id.get(e["target"])
+        confs = [
+            c for c in ((src.confidence if src else None), (tgt.confidence if tgt else None))
+            if c is not None
+        ]
+        edges.append(GraphAnswerEdge(
+            source=e["source"],
+            target=e["target"],
+            relation_type=e["relation_type"],
+            confidence=round(min(confs), 3) if confs else None,
+        ))
+
+    paths: list[GraphPath] = []
+    for p in data["paths"]:
+        hops_n = max(0, len(p["nodes"]) - 1)
+        paths.append(GraphPath(
+            nodes=list(p["nodes"]),
+            relations=list(p["relations"]),
+            hops=hops_n,
+            confidence=round(max(0.0, 1.0 - 0.15 * hops_n), 3),
+        ))
+
+    # 综合置信度：路径按 1/(hops+1) 加权平均（架构决策 2 / §7 #4）
+    total_w = sum(1.0 / (p.hops + 1) for p in paths)
+    weighted = sum((1.0 / (p.hops + 1)) * p.confidence for p in paths)
+    confidence = round(weighted / total_w, 3) if total_w > 0 else 0.0
+
+    return GraphAnswer(
+        nodes=nodes,
+        edges=edges,
+        paths=paths,
+        seed_ids=seed_ids,
+        confidence=confidence,
+        backend="networkx",
+        degraded=True,
+        latency_ms=0.0,
+        sources=sources,
+    )
+
+
+def _extract_knowledge_answer_from_results(results: list[str]) -> KnowledgeAnswer | None:
+    """从工具结果字符串中反解 :class:`KnowledgeAnswer`（含 sources）。
+
+    工具结果形如 ``【query_knowledge_base】结果：{json}``，JSON 为
+    ``KnowledgeAnswer.model_dump()``（answer/citations/sources/graph_paths/...）。
+    仅当 JSON 含 ``answer`` 键且为 dict 时反解；无 sources 也算有效
+    （真实检索 0 来源时 ``sources=[]``，前端按 K-3/K-5 不渲染卡片区）。
+
+    Args:
+        results: ``_execute_tools`` 返回的工具结果字符串列表。
+
+    Returns:
+        反解成功的 :class:`KnowledgeAnswer`；无命中返回 None。
+    """
+    if not results:
+        return None
+    for res in results:
+        if not isinstance(res, str):
+            continue
+        # 结果字符串可能带「【tool】结果：」前缀，从第一个 { 开始解析
+        start = res.find("{")
+        if start < 0:
+            continue
+        candidate = res[start:]
+        try:
+            parsed = json.loads(candidate)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(parsed, dict) or "answer" not in parsed:
+            continue
+        try:
+            return KnowledgeAnswer(**parsed)
+        except Exception as e:  # noqa: BLE001 — 反解失败跳过，继续下一条
+            logger.debug("_extract_knowledge_answer_from_results: 反解失败: {}", e)
+            continue
+    return None
+
+
+async def _build_mock_knowledge_answer(
+    last_msg: str,
+    answer_text: str = "",
+) -> KnowledgeAnswer | None:
+    """Mock 模式下的 :class:`KnowledgeAnswer`（带结构化 sources，与正文一致）。
+
+    - feature-intro 通道：复用 ``search_feature_intro`` 的 chunk 构建 sources
+      （主理人拍板：纳入，成本低）；
+    - 油温 / 过载 / 停机检修 / 兜底：使用 :data:`_MOCK_KNOWLEDGE_SOURCES`
+      硬编码 sources（K-4 一处定义）。
+
+    Args:
+        last_msg: 用户最近一条消息（用于剧本关键词匹配）。
+        answer_text: mock 正文（与 ``_get_mock_response`` 同源，避免重复）。
+
+    Returns:
+        :class:`KnowledgeAnswer`；``last_msg`` 为空返回 None（不注入）。
+    """
+    if not last_msg:
+        return None
+
+    # ── feature-intro 通道：复用 search_feature_intro 的 chunk 构建 sources ──
+    try:
+        from core.feature_intro.intent import detect as _fi_detect_ka
+        _fi_i = _fi_detect_ka(last_msg)
+        if _fi_i.hit:
+            from mcp_tools.tools.knowledge_tools import search_feature_intro
+            _fi_res = await search_feature_intro(last_msg, top_k=5)
+            _fi_chunks = (
+                list(_fi_res.get("chunks") or [])
+                if isinstance(_fi_res, dict) else []
+            )
+            if _fi_chunks:
+                top_n = int(getattr(settings, "citation_top_n", 5))
+                _sources = [
+                    SourceRef(
+                        doc_id=str(c.get("doc_id") or "") or None,
+                        title=str(c.get("title") or "") or None,
+                        section=str(c.get("section") or "") or None,
+                        score=round(min(1.0, float(c.get("score") or 0.0)), 3),
+                        snippet=_truncate_text(c.get("content") or "", 120),
+                        content_excerpt=(c.get("content") or "").strip() or None,
+                    )
+                    for c in _fi_chunks[:top_n]
+                ]
+                return KnowledgeAnswer(
+                    answer=answer_text or "",
+                    citations=[],
+                    graph_paths=[],
+                    confidence=0.95,
+                    refuse=False,
+                    sources=_sources,
+                )
+    except Exception as _fi_exc:  # noqa: BLE001 — mock 路径不可阻塞主流程
+        logger.debug("mock feature_intro knowledge_answer bypassed: {}", _fi_exc)
+
+    # ── 知识剧本：油温 / 过载 / 停机检修 / 兜底 ──
+    script: str | None = None
+    if "油温" in last_msg or "油" in last_msg:
+        raw_sources = _MOCK_KNOWLEDGE_SOURCES["oil_temperature"]
+        confidence = 0.85
+        script = "oil_temperature"
+    elif "过载" in last_msg or "负荷" in last_msg:
+        raw_sources = _MOCK_KNOWLEDGE_SOURCES["overload"]
+        confidence = 0.84
+        script = "overload"
+    elif "停机" in last_msg or "检修" in last_msg:
+        raw_sources = _MOCK_KNOWLEDGE_SOURCES["shutdown"]
+        confidence = 0.80
+        script = "shutdown"
+    else:
+        raw_sources = _MOCK_KNOWLEDGE_SOURCES["fallback"]
+        confidence = 0.75
+
+    ka = KnowledgeAnswer(
+        answer=answer_text or "",
+        citations=[],
+        graph_paths=[],
+        confidence=confidence,
+        refuse=False,
+        sources=[SourceRef(**item) for item in raw_sources],
+    )
+    # M-4（P1-3，决策 7）：油温/过载/停机检修三剧本携带 mock graph_answer
+    # （sources 与 KnowledgeAnswer.sources 同一份，US-5 同源）；fallback 不 attach。
+    ga = _build_mock_graph_answer(script, ka.sources)
+    if ga is not None:
+        ka.graph_answer = ga
+    return ka
+
+
+async def _attach_knowledge_answer(
+    agent_name: str,
+    update: dict[str, Any],
+    *,
+    results: list[str] | None = None,
+    last_user: str | None = None,
+    answer_text: str = "",
+) -> dict[str, Any]:
+    """统一把本轮 knowledge_agent 的 :class:`KnowledgeAnswer` 注入 AgentState。
+
+    优先级（K-3 / K-4 / K-6）：
+    1. ``update`` 已显式设置（调用方手动注入）→ 保留；
+    2. 工具结果字符串 JSON 反解（真实路径 ``query_knowledge_base``）→ 注入；
+    3. mock 分支 → ``_build_mock_knowledge_answer(last_user)`` 构建注入；
+    4. 其余（非 knowledge_agent / 剧本外 / 无来源）→ 不注入（done 事件无该键）。
+
+    Args:
+        agent_name: 当前 Agent 名。
+        update: 节点返回的 update dict（就地补充 ``knowledge_answer`` 键）。
+        results: 工具执行结果字符串（真实路径）。
+        last_user: 用户最近消息（mock 路径）。
+        answer_text: mock 正文（用于 KnowledgeAnswer.answer 回填）。
+
+    Returns:
+        注入后的 update dict（非 knowledge_agent 时原样返回）。
+    """
+    if agent_name != "knowledge_agent":
+        return update
+    if update.get("knowledge_answer") is not None:
+        return update
+    ka: KnowledgeAnswer | None = None
+    if results:
+        ka = _extract_knowledge_answer_from_results(results)
+    if ka is None and last_user:
+        ka = await _build_mock_knowledge_answer(last_user, answer_text=answer_text)
+    if ka is not None:
+        update["knowledge_answer"] = ka
+    return update
+
+
 async def _synthesize_via_llm(
     state: AgentState, agent_name: str, tools: list[BaseTool], results: list[str],
 ) -> str:
@@ -416,7 +930,10 @@ async def _synthesize_via_llm(
     })
     try:
         # B1：chat_completion 是同步 LLM 调用，async 节点内直接调用会阻塞事件循环
-        ok, content = await achat_completion(messages=messages, temperature=0.3)
+        # V1.7.0 M-2：透传 state.model_id（None 时 achat_completion 内部回退全局）
+        ok, content = await achat_completion(
+            messages=messages, model_id=state.model_id, temperature=0.3,
+        )
         if ok:
             return content
     except Exception as e:
@@ -580,6 +1097,29 @@ async def _get_mock_response(agent_name: str, state: AgentState) -> str:
                 "  - 紧急短期负载（≤150%）：不超过 10 分钟\n\n"
                 "⚠️ 当前 #1 主变负载电流偏高，建议尽快调整负荷分配。"
             )
+        elif "停机" in last_msg or "检修" in last_msg:
+            # P2-A（C-1）：停机检修专属正文 —— 与 _MOCK_KNOWLEDGE_SOURCES["shutdown"]
+            # （《变压器运行规程》6.2 + 《电力设备故障诊断手册》检修章节）完全对齐（K-4）。
+            # 此前该分支缺失，防御路径下正文回落到兜底《电力设备运行规程》通用章节，
+            # 与 sources（6.2 停机检修流程）不一致。
+            return (
+                "【知识库 Agent】基于混合 RAG 检索（向量 + 图谱）结果：\n\n"
+                "📄 **引用来源**：\n"
+                "  [1] 《变压器运行规程》第 6.2 节：停机检修流程\n"
+                "  [2] 《电力设备故障诊断手册》检修章节\n\n"
+                "🔗 **图谱检索路径**：\n"
+                "  停机检修 → 前置 → 工作票审批 → 隔离 → 验电接地\n"
+                "  → 执行 → 检修试验 → 恢复送电\n\n"
+                "📖 **回答**：\n"
+                "变压器停机检修必须严格执行第 6.2 节规定的安全流程：\n"
+                "  1. 办理工作票并履行审批手续，明确检修内容、安全措施和监护人\n"
+                "  2. 断开高压侧和低压侧断路器，拉开隔离开关并可靠接地，验电确认无电后悬挂「禁止合闸，有人工作」标示牌\n"
+                "  3. 检修内容一般包括：油色谱分析与油质检测、绕组绝缘电阻与介质损耗测量、分接开关检查、冷却系统检修、套管及密封件检查\n"
+                "  4. 检修完成后进行交接试验，确认各项指标合格后方可恢复送电\n\n"
+                "✅ **建议**：\n"
+                "  1. 检修前完成故障定位与风险评估，制定检修方案并准备备品备件\n"
+                "  2. 全过程做好检修记录并存档，便于后续追溯"
+            )
         return (
             "【知识库 Agent】基于混合 RAG 检索（向量 + 图谱）结果：\n\n"
             "📄 **引用来源**：\n"
@@ -660,12 +1200,16 @@ def build_agent_node(
                 final = await _maybe_run_explainability(
                     agent_name, state, final, user_msg=state.messages[-1].get("content", "") if state.messages else "",
                 )
-                return {
+                update = {
                     "messages": state.messages + [_with_meta(final, agent_name, state.thread_id)],
                     "pending_tool_plan": None,
                     "current_agent": agent_name,
                     "error": None,
                 }
+                # M-3：HITL 恢复路径同样从工具结果反解结构化来源（如命中 query_knowledge_base）
+                if agent_name == "knowledge_agent":
+                    update = await _attach_knowledge_answer(agent_name, update, results=results)
+                return update
 
         # ── Mock 模式：无需 API Key ─────
         if mock_mode:
@@ -713,12 +1257,18 @@ def build_agent_node(
                     final = await _maybe_run_explainability(
                         agent_name, state, mock_reply, user_msg=last_user,
                     )
-                    return {
+                    update = {
                         "messages": state.messages + [_with_meta(final, agent_name, state.thread_id)],
                         "pending_tool_plan": None,
                         "current_agent": agent_name,
                         "error": None,
                     }
+                    # M-3（AC-4）：演示模式剧本内 knowledge 回复携带结构化来源
+                    if agent_name == "knowledge_agent":
+                        update = await _attach_knowledge_answer(
+                            agent_name, update, last_user=last_user, answer_text=mock_reply,
+                        )
+                    return update
 
             mock_reply = await _get_mock_response(agent_name, state)
             hr_reply = _high_risk_mock_reply(last_user)
@@ -727,13 +1277,19 @@ def build_agent_node(
                 final = await _maybe_run_explainability(
                     agent_name, state, mock_reply, user_msg=last_user,
                 )
-                return {
+                update = {
                     "messages": state.messages + [_with_meta(final, agent_name, state.thread_id)],
                     # Bug2 修复：任何 mock 响应结束时清掉残留工具计划（防状态卡死）
                     "pending_tool_plan": None,
                     "current_agent": agent_name,
                     "error": None,
                 }
+                # M-3：mock 分支 knowledge 回复携带结构化来源（AC-4）
+                if agent_name == "knowledge_agent":
+                    update = await _attach_knowledge_answer(
+                        agent_name, update, last_user=last_user, answer_text=mock_reply,
+                    )
+                return update
             # 高危工具演示触发：走工具执行路径（无需 LLM）
             reply = hr_reply
         else:
@@ -749,12 +1305,20 @@ def build_agent_node(
                     agent_name, state, mock_reply,
                     user_msg=_last_user_message(state),
                 )
-                return {
+                update = {
                     "messages": state.messages + [_with_meta(final, agent_name, state.thread_id)],
                     "pending_tool_plan": None,
                     "current_agent": agent_name,
                     "error": None,
                 }
+                # M-3：dashscope 不可用降级 mock 同样携带结构化来源（AC-4）
+                if agent_name == "knowledge_agent":
+                    update = await _attach_knowledge_answer(
+                        agent_name, update,
+                        last_user=_last_user_message(state),
+                        answer_text=mock_reply,
+                    )
+                return update
             try:
                 from dashscope import Generation
 
@@ -833,21 +1397,30 @@ def build_agent_node(
             final = await _maybe_run_explainability(
                 agent_name, state, final, user_msg=_last_user_message(state),
             )
-            return {
+            update = {
                 "messages": state.messages + [_with_meta(final, agent_name, state.thread_id)],
                 "pending_tool_plan": None,
                 "current_agent": agent_name,
                 "error": None,
             }
+            # M-3：工具执行路径从工具结果反解结构化来源（query_knowledge_base 含 sources）
+            if agent_name == "knowledge_agent":
+                update = await _attach_knowledge_answer(agent_name, update, results=results)
+            return update
 
         final = await _maybe_run_explainability(
             agent_name, state, reply, user_msg=_last_user_message(state),
         )
-        return {
+        update = {
             "messages": state.messages + [_with_meta(final, agent_name, state.thread_id)],
             "current_agent": agent_name,
             "error": None,
         }
+        # M-3：真实回复（未走工具调用）一般无结构化来源；显式挂接为 no-op，
+        # 保证所有返回路径行为一致（K-6：非空才携带 knowledge_answer 键）。
+        if agent_name == "knowledge_agent":
+            update = await _attach_knowledge_answer(agent_name, update)
+        return update
 
     async def agent_node(state: AgentState) -> dict[str, Any]:
         """异步 Agent 节点（对外入口）。

@@ -1,0 +1,193 @@
+classDiagram
+    direction LR
+
+    %% ═══════════ 后端数据模型（api/schemas）═══════════
+    class SourceRef {
+        +int|None chunk_id
+        +str doc_id
+        +str filename
+        +str title
+        +str source
+        +str|None section
+        +float|None score
+        +str snippet
+        +str content_excerpt
+        +int|None chunk_index
+        +int|None total_chunks
+    }
+
+    class RetrievalResult {
+        +list[str] vector_chunks
+        +list[SourceRef] sources
+        +list[GraphEntity] graph_entities
+        +list[list[str]] graph_paths
+        +float confidence
+    }
+
+    class KnowledgeAnswer {
+        +str answer
+        +list[str] citations
+        +list[SourceRef] sources
+        +list[list[str]] graph_paths
+        +float confidence
+        +bool refuse
+        +str|None refuse_reason
+    }
+
+    class ChatResponse {
+        +str thread_id
+        +str response
+        +str|None agent_name
+        +bool interrupt_required
+        +str|None interrupt_node
+        +str|None interrupt_msg
+        +bool is_demo_out_of_scope
+        +KnowledgeAnswer|None knowledge_answer
+    }
+
+    class AgentState {
+        +list[dict] messages
+        +str thread_id
+        +KnowledgeAnswer|None knowledge_answer
+        +str|None current_agent
+        +str|None error
+        +str|None display_mode
+        +str|None model_id
+    }
+
+    RetrievalResult --> SourceRef : contains
+    KnowledgeAnswer --> SourceRef : sources
+    ChatResponse --> KnowledgeAnswer : knowledge_answer
+    AgentState --> KnowledgeAnswer : knowledge_answer
+
+    %% ═══════════ 后端服务层 ═══════════
+    class VectorStore {
+        +list[dict] _chunks
+        +search(query, top_k, exclude_tags) list[dict]
+        +_keyword_fallback(query, top_k, exclude_tags) list[dict]
+        +_distance_to_score(distance) float
+        +_enrich_search_result(raw) list[dict]
+        +_index_chunks(chunks) void
+        +upsert_chunks(chunks) int
+        +ensure_fresh() bool
+    }
+
+    class RagEngine {
+        +VectorStore vector_store
+        +retrieve(query, top_k, thread_id) RetrievalResult
+        +answer(query, top_k, thread_id) KnowledgeAnswer
+        +_make_source_ref(vec_result) SourceRef
+        +_strip_title_prefix(content) str
+        +_make_excerpt(content) str
+        +_sort_sources(sources) list[SourceRef]
+        +_calc_confidence(chunks, entities) float
+    }
+
+    class KnowledgeTools {
+        +query_knowledge_base(query) dict
+        +search_knowledge_chunks(query, top_k) list[dict]
+        +search_feature_intro(query, top_k, tag) dict
+    }
+
+    RagEngine --> VectorStore : uses
+    KnowledgeTools --> RagEngine : uses
+
+    %% ═══════════ Agent 工厂（agent_factory）═══════════
+    class AgentFactory {
+        +build_agent_node(agent_name, mcp_tools) node
+        +_extract_knowledge_answer_from_results(results) KnowledgeAnswer|None
+        +_build_mock_knowledge_answer(last_msg) KnowledgeAnswer|None
+        +_attach_knowledge_answer(agent_name, update, results, last_user) dict
+        +_get_mock_response(agent_name, state) str
+    }
+
+    AgentFactory --> AgentState : 注入 knowledge_answer
+    AgentFactory --> KnowledgeTools : _invoke_tool
+
+    %% ═══════════ 前端类型 / 状态 ═══════════
+    class SourceRefTS {
+        +number|null chunk_id
+        +string doc_id
+        +string filename
+        +string title
+        +string source
+        +string|null section
+        +number|null score
+        +string snippet
+        +string content_excerpt
+        +number|null chunk_index
+        +number|null total_chunks
+    }
+
+    class KnowledgeAnswerTS {
+        +string answer
+        +string[] citations
+        +SourceRefTS[] sources
+        +string[][] graph_paths
+        +number confidence
+        +boolean refuse
+        +string|null refuse_reason
+    }
+
+    class SseEvent {
+        +string type
+        +string thread_id
+        +KnowledgeAnswerTS|null knowledge_answer
+    }
+
+    class ChatStore {
+        +ChatMessage[] messages
+        +sendMessage(text) void
+        +sendMessageBlocking(text) void
+        +attachContext(data) void
+        +knowledgeAnswers computed
+    }
+
+    class ChatMessage {
+        +string id
+        +string role
+        +string content
+        +KnowledgeAnswerTS|null knowledgeAnswer
+    }
+
+    KnowledgeAnswerTS --> SourceRefTS : sources
+    SseEvent --> KnowledgeAnswerTS : knowledge_answer
+    ChatMessage --> KnowledgeAnswerTS : knowledgeAnswer
+    ChatStore --> ChatMessage : messages
+
+    %% ═══════════ 前端 UI / composable ═══════════
+    class UseKbSources {
+        +groupSourcesByDoc(sources) SourceGroup[]
+        +filterSourcesByDoc(sources, docId) SourceRefTS[]
+        +useSourcesCollapse(key) collapsed ref
+        +formatScore(score) string|null
+        +sourceLabel(src) string
+    }
+
+    class RagPanel {
+        +KnowledgeAnswer answer
+        +computed sources
+        +computed docGroups
+        +computed filteredSources
+        +ref activeDoc
+        +render() void
+    }
+
+    class CitationCard {
+        +SourceRefTS source
+        +number index
+        +ref expanded
+        +copyDocId() void
+        +toggleExcerpt() void
+    }
+
+    class DocFilterChips {
+        +SourceGroup[] docs
+        +string modelValue
+        +emit update:modelValue
+    }
+
+    RagPanel --> UseKbSources : uses
+    RagPanel --> CitationCard : 列表渲染
+    RagPanel --> DocFilterChips : 筛选
+    ChatStore ..> RagPanel : msg.knowledgeAnswer

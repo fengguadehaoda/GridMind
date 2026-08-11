@@ -1,69 +1,83 @@
+# GridMind v1.7.0 第一批 · 类图（提取自 multiuser-architecture-2026-08-10.md §3）
+# 说明：mermaid classDiagram 中函数方法以方法签名表示；依赖方向见箭头。
+
 classDiagram
-    class VectorStore {
-        +str collection_name
-        +list _chunks
-        +str _revision
-        +upsert_chunks(chunks: list[dict]) int
-        +delete_chunks(doc_id: str) int  <<NEW>>
-        +search(query: str, top_k: int, exclude_tags: list[str]|None) list[dict]
-        +search_by_tag(tag: str|None, top_k: int) list[dict]
-        +ensure_fresh() bool
-        +reload() int
+    direction LR
+
+    class Role {
+        <<enumeration>>
+        DISPATCHER = "dispatcher"
+        OPERATOR = "operator"
+        KB_ADMIN = "kb_admin"
+        AUDITOR = "auditor"
+        ADMIN = "admin"
+    }
+
+    class ThreadRecord {
+        +str thread_id  PK
+        +str owner_id
+        +str title = "新会话"
+        +str model_id  NULL=全局默认
+        +str created_at
+        +str updated_at
+    }
+
+    class ThreadStore {
+        +get_thread(thread_id) dict | None
+        +get_owner(thread_id) str | None
+        +create_thread(thread_id, owner_id, title, model_id) None
+        +ensure_thread(thread_id, owner_id, title) dict
+        +set_model(thread_id, model_id) None
+        +get_model(thread_id) str | None
+        +list_by_owner(owner_id) list
         +count() int
     }
 
-    class KbUploadService {
-        +str DOC_ID_PREFIX = "user-upload"
-        +str ROOT_TAG = "user-upload"
-        +int MAX_FILE_BYTES = 5 * 1024 * 1024
-        +frozenset ALLOWED_EXT = {".txt", ".md"}
-        +ingest(filename: str, data: bytes, title: str|None) UploadResult
-        +list_docs() list[KbUploadItem]
-        +delete(doc_id: str) int
-        -_detect_encoding(data: bytes) str
-        -_split_text(text: str, ext: str) list[str]
-        -_build_chunks(filename, title, text) list[dict]
-        +build_doc_id(filename: str) str  <<staticmethod>>
+    class ModelSwitchRequest {
+        +str model_id
+        +str thread_id = None
     }
 
-    class UploadResponse {
-        +str doc_id
-        +str title
-        +str filename
-        +int size_bytes
-        +int chunk_count
-        +str status = "ok"
+    class AgentState {
+        +list messages
+        +str thread_id
+        +str display_mode = None
+        +str model_id = None
+        +dict pause_signal = None
+        +dict abort_signal = None
     }
 
-    class KbUploadItem {
-        +str doc_id
-        +str filename
-        +str title
-        +int size_bytes
-        +str uploaded_at
-        +int chunk_count
-        +str status = "ok"
+    class auth {
+        +verify_jwt_token(credentials) dict
+        +verify_thread_ownership(thread_id, credentials) dict
+        +verify_thread_ownership_if_prod(thread_id, credentials) dict | None
+        +verify_audit_thread_access(thread_id, credentials) dict
     }
 
-    class KbUploadListResponse {
-        +list[KbUploadItem] items
-        +int total
+    class rbac {
+        +get_role(payload) Role
+        +require_role(*roles) dict
+        +role_allows(role, *allowed) bool
     }
 
-    class DeleteResponse {
-        +str status = "ok"
-        +str doc_id
-        +int deleted_chunks
+    class llm_client {
+        +get_current_model() str
+        +set_current_model(model_id) None
+        +get_default_model() str
+        +achat_completion(messages, model_id=None) tuple
     }
 
-    class UploadError {
-        +str code
-        +str message
-        +int http_status
+    class graph_builder {
+        +run(thread_id, message, display_mode=None, model_id=None) dict
+        +resume(thread_id, action, reason, edited_args, edit_reason, model_id=None) dict
+        +aget_state(thread_id) Any
     }
 
-    KbUploadService --> VectorStore : 复用单例 get_vector_store()
-    KbUploadService ..> UploadResponse : 构造
-    KbUploadService ..> KbUploadItem : 构造
-    KbUploadService ..> UploadError : 抛出
-    KbUploadListResponse o-- KbUploadItem : items
+    ThreadStore --> ThreadRecord : 读写 threads 表
+    auth --> ThreadStore : DB owner 校验 / 懒登记
+    rbac --> auth : verify_jwt_token（lazy import）
+    rbac --> Role : get_role 解析
+    ModelSwitchRequest --> ThreadStore : set_model_for_thread
+    AgentState --> llm_client : model_id 回退 get_current_model()
+    graph_builder --> AgentState : 写入 model_id / display_mode
+    auth ..> rbac : get_role / require_role（lazy import，避免循环）

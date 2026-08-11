@@ -142,7 +142,10 @@ onUnmounted(() => {
 .gm-shortcuts-overlay {
   position: fixed;
   inset: 0;
-  z-index: var(--z-dialog);
+  /* P2-D（R-1f）：快捷键浮层按 ? 触发，应低于弹窗——弹窗打开时 ? 不应穿透盖住
+     审批弹窗 → 由 var(--z-dialog)（1000）改为 var(--z-dropdown)（100）。
+     浮层本体仍正常显示（居中面板 + ESC/点遮罩关闭行为不变） */
+  z-index: var(--z-dropdown);
   display: flex;
   align-items: center;
   justify-content: center;
