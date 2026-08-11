@@ -235,6 +235,14 @@ class AuthService:
         token_hash = self._hash_refresh(refresh_token)
         conn = get_connection()
         try:
+            # ── 原子轮换（P1 安全修复）：BEGIN IMMEDIATE 在 SELECT 前获取写锁 ──
+            # 原实现（deferred 事务）存在并发竞态：两个携带**同一 refresh token**
+            # 的并发请求可在任一者写库前都通过 revoked_at 检查 → 双双轮换成功
+            # （同一 refresh 产生两个有效会话，构成 replay 窗口）。BEGIN IMMEDIATE
+            # 使第二个请求在 BEGIN 处阻塞，直到第一个 commit 后才读到 revoked_at
+            # → 401，保证「同一 token 至多成功轮换一次」（前端 401 拦截器并发
+            # 去重 + 本后端原子性双保险，见 auth.ts::refreshInFlight）。
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT * FROM refresh_tokens WHERE token_hash = ?", (token_hash,)
             ).fetchone()
@@ -274,6 +282,13 @@ class AuthService:
                 (now, new_id, row["id"]),
             )
             conn.commit()
+        except HTTPException:
+            conn.rollback()
+            raise
+        except Exception:
+            # 任何写异常 → 回滚，保持轮换原子性（不留半成品链）
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

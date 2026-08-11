@@ -47,9 +47,9 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(ROOT_DIR / ".env")
 
 # 当前版本号（⚠️ 每次发版更新此处；同时保持 RELEASE-NOTES.md 同步）
-# 说明：仓库 RELEASE-NOTES.md 当前仍停留在 v1.4.0（滞后于代码基线），
-# 因此 get_version() 仅在文件版本不低于此值时采用文件值。
-CURRENT_VERSION = "1.7.0"
+# 说明：仓库 RELEASE-NOTES.md 当前已与代码基线同步（v1.8.0），
+# get_version() 优先解析文件版本，仅在文件版本低于此值时回退硬编码值。
+CURRENT_VERSION = "1.8.0"
 
 # 前端固定端口（Vite 默认）；API/MCP 端口以 api.config.settings 为准，.env 可覆盖
 FRONTEND_PORT_DEFAULT = 5173
@@ -69,8 +69,8 @@ def get_version() -> str:
     """返回 GridMind 版本号（banner 展示用）。
 
     优先从 RELEASE-NOTES.md 解析最新版本；仅当解析结果不低于代码基线
-    CURRENT_VERSION 时采用（当前仓库 RELEASE-NOTES.md 仍停留在 v1.4.0，
-    滞后于代码基线，直接展示会误导用户），否则回退硬编码 CURRENT_VERSION。
+    CURRENT_VERSION 时采用（当前仓库 RELEASE-NOTES.md 已同步至 v1.8.0，
+    与代码基线一致），否则回退硬编码 CURRENT_VERSION。
     """
     try:
         text = (ROOT_DIR / "RELEASE-NOTES.md").read_text(encoding="utf-8")

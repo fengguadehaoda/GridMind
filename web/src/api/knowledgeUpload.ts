@@ -1,31 +1,24 @@
 /**
  * api/knowledgeUpload.ts · 用户上传知识库 API（V1.7 · KB Upload）
  * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- * 复用 web/src/api/chat.ts 的 resolveBaseUrl()（默认 /api，Vite proxy 到 9900）；
- * 鉴权统一 getAuthHeaders()（Authorization: Bearer <jwt>，dev 默认 token）。
+ * V1.8.0 final-audit（P1）：统一走共享 httpClient（401 自动 refresh 重放 +
+ * Bearer 自动注入；生产 access TTL 过期后 KB 上传/列表/删除不再中断）。
+ * baseURL 由 httpClient 统一解析（默认 /api，Vite proxy 到 9900）。
  *
  * 上传用 FormData + axios onUploadProgress 进度回调；
  * **不**手动设置 Content-Type（交给浏览器带 multipart boundary）。
+ * 上传可能包含解析/切分/入库，超时放宽到 120s（per-request 覆盖默认 60s）。
  *
  * 作者：寇豆码（工程师）
  */
 
 import axios from 'axios'
-import { getAuthHeaders } from '../composables/useJwtAuth'
 import type {
   DeleteResponse,
   KbUploadListResponse,
   UploadResponse,
 } from '../types/knowledgeUpload'
-import { resolveBaseUrl } from './chat'
-
-const BASE = resolveBaseUrl()
-
-// 上传可能包含解析/切分/入库，超时放宽到 120s（默认 60s）
-const http = axios.create({
-  baseURL: BASE,
-  timeout: 120000,
-})
+import httpClient from './httpClient'
 
 /**
  * POST /api/knowledge/upload — 上传知识文档（multipart：file + 可选 title）
@@ -46,9 +39,10 @@ export async function uploadKnowledge(
   if (title && title.trim()) {
     form.append('title', title.trim())
   }
-  const { data } = await http.post<UploadResponse>('/knowledge/upload', form, {
+  const { data } = await httpClient.post<UploadResponse>('/knowledge/upload', form, {
     // 不手动设 Content-Type —— 浏览器自动带 multipart boundary
-    headers: { ...getAuthHeaders() },
+    // 上传可能包含解析/切分/入库，放宽超时到 120s（默认实例 60s）
+    timeout: 120000,
     onUploadProgress: (e) => {
       if (onProgress && e.total) {
         onProgress(Math.round((e.loaded / e.total) * 100))
@@ -64,9 +58,7 @@ export async function uploadKnowledge(
  * @returns 文档列表响应（时间倒序）
  */
 export async function fetchUploads(): Promise<KbUploadListResponse> {
-  const { data } = await http.get<KbUploadListResponse>('/knowledge/uploads', {
-    headers: getAuthHeaders(),
-  })
+  const { data } = await httpClient.get<KbUploadListResponse>('/knowledge/uploads')
   return data
 }
 
@@ -77,9 +69,8 @@ export async function fetchUploads(): Promise<KbUploadListResponse> {
  * @returns 删除响应（deleted_chunks）
  */
 export async function deleteUpload(docId: string): Promise<DeleteResponse> {
-  const { data } = await http.delete<DeleteResponse>(
+  const { data } = await httpClient.delete<DeleteResponse>(
     `/knowledge/uploads/${encodeURIComponent(docId)}`,
-    { headers: getAuthHeaders() },
   )
   return data
 }

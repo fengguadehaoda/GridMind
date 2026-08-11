@@ -113,6 +113,11 @@ class SSEEventEmitter:
         self._subscribers: dict[str, set[asyncio.Queue[SSEEvent]]] = {}
         # 保护 _subscribers 字典读写（subscribe / unsubscribe / 读 snapshot）
         self._lock: asyncio.Lock = asyncio.Lock()
+        # P1-3：当前「待审批 HITL」thread 集合（进程内，驱动 /audit/pending-count）。
+        # 语义：emit_hitl_interrupt 时加入，emit_hitl_resolved 时移除（幂等）。
+        # 已知边界（P2）：单进程内存态，重启后清零 / 不跨进程共享；
+        # 前端 SSE 断连重连后由本集合提供 5s 轮询校正（F3 徽标）。
+        self._pending_interrupt_threads: set[str] = set()
 
     # ── 订阅管理 ──────────────────────────────────────
 
@@ -305,6 +310,8 @@ class SSEEventEmitter:
             tool:      触发拦截的工具名（如 ``shutdown_device``）。
             args:      工具调用参数 dict；可能 None（用户已审批时通常不传）。
         """
+        # P1-3：登记为待审批（驱动 /audit/pending-count；幂等）
+        self._pending_interrupt_threads.add(thread_id)
         return await self.emit(
             "hitl_interrupt",
             thread_id,
@@ -324,6 +331,8 @@ class SSEEventEmitter:
             decision:   ``approved`` / ``rejected`` / ``edit_approved``。
             resolved_at: ISO 8601 字符串。
         """
+        # P1-3：移除待审批登记（幂等——未登记也安全）
+        self._pending_interrupt_threads.discard(thread_id)
         return await self.emit(
             "hitl_resolved",
             thread_id,
@@ -361,6 +370,17 @@ class SSEEventEmitter:
     def get_total_thread_count(self) -> int:
         """同步读当前活跃 thread 数（仅用于 stats / 测试）。"""
         return len(self._subscribers)
+
+    def get_pending_interrupt_count(self) -> int:
+        """返回当前待审批 HITL thread 数（``GET /audit/pending-count`` 数据源）。
+
+        进程内登记（单 worker 语义）；计数 ≥0，失败不可能——集合操作无 IO。
+        """
+        return len(self._pending_interrupt_threads)
+
+    def get_pending_interrupt_threads(self) -> set[str]:
+        """返回当前待审批 HITL thread_id 集合的拷贝（仅用于 stats / 测试）。"""
+        return set(self._pending_interrupt_threads)
 
 
 # ═══════════════════════════════════════════════════════

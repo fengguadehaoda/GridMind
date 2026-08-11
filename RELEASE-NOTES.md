@@ -1,5 +1,66 @@
 # GridMind · 灵枢电网 Release Notes
 
+## v1.8.0（2026-08-11）— 代码基线 v1.8.0 · 最终交付
+
+**主题**：真实登录/注册 + RBAC 权限矩阵 + 全量 BUG 审计收口（auth T01-T05 + register-rbac T1-T4）
+
+> 覆盖 v1.5.0 / v1.5.1 / v1.6.0 / v1.7.0 / v1.8.0 累计交付。此前最新公开版本为
+> v1.4.0（2026-08-04）；v1.7.0 段补齐 M-1 ~ M-5，本段补齐认证体系与最终审计。
+
+---
+
+### 🌟 核心新功能
+
+#### 真实登录 / 注册（auth T01-T05）
+- `users` / `refresh_tokens` / `auth_audit_log` 三表幂等迁移（bcrypt cost 12 + 72 字节截断）
+- `/auth/*` 6 端点：login / register / refresh（轮换 + 成链）/ logout（幂等）/ me / change-password
+- 初始管理员幂等创建（生产未配 `ADMIN_INITIAL_PASSWORD` → 启动拒绝，fail-closed）
+- 锁定（5 次失败锁 15min + Retry-After）/ 限流（login 10/min、register 5/min）/ 防枚举（dummy bcrypt）
+- access token 仅存内存、refresh 存 localStorage（防 XSS）；前端 401 自动 refresh 并发去重
+
+#### 开放注册 + RBAC 权限矩阵（register-rbac T1-T4）
+- 开放注册（默认 `dispatcher`，注册即登录；请求体不含 role 防提权）
+- `GET /rbac/matrix`：5 角色 × 7 端点类别矩阵，后端单一权威、前端零硬编码
+- 用户管理 `/users*`（仅 admin；最后 admin 防呆 409）+ 前端 `UsersView` / `RbacMatrixTable`
+
+#### 最终审计（final-audit）
+- P1 修复：`authStore.hydrate()` 与 httpClient 401 拦截器并发 refresh 竞态（store 级 refresh 单例去重）
+- P1 安全：refresh 轮换原子化（`BEGIN IMMEDIATE` 防同一 token 并发双轮换 / replay 窗口）
+- P1 修复：`/audit/pending-count` 端点缺失（每 5s 404 + HITL 徽标永久降级）→ 补实现
+- P1 修复：`sessions/monitor/models/metrics/audit/knowledgeUpload` 六 API 模块统一走共享 httpClient
+  （401 自动 refresh + Bearer 注入；生产 15min access TTL 后功能不再中断）
+- README.md 重写为 v1.8.0 现状（架构/认证/API 概览/测试/部署）
+
+---
+
+### 📊 基线
+
+| 维度 | 数据 |
+|------|------|
+| **测试** | 817 passed / 18 skipped（v1.8.0 基线） |
+| **API 版本** | v1.8.0（`GET /` 返回真实版本） |
+| **RBAC 角色** | 5 个（dispatcher / operator / kb_admin / auditor / admin） |
+
+---
+
+### ⚠️ 已知事项（不阻塞）
+
+1. `/audit/pending-count` 为进程内登记（单 worker）；重启后清零、不跨进程共享（P2）
+2. `/system` 导航仅对 admin 显示，但后端 `/debug/*`、`/grayscale/*` 允许 operator/admin（前端导航过严，P2）
+3. Neo4j 沙箱未启用：图谱问答默认 NetworkX 内存图路径，Neo4j 启用时自动复用
+
+---
+
+### 👥 贡献者
+
+- **齐活林（Qi）** · 交付总监 — 主理人 / SOP 编排
+- **许清楚（Xu）** · 产品经理 — PRD / 文档
+- **高见远（Gao）** · 架构师 — 系统设计 + 任务分解
+- **寇豆码（Kou）** · 工程师 — 代码实现
+- **严过关（Yan）** · QA 工程师 — 测试验证
+
+---
+
 ## v1.7.0（2026-08-11）— 代码基线 v1.7.0
 
 **主题**：多用户 / 知识库 / 会话管理完整迭代（M-1 ~ M-5 + 启动脚本加固 + 遗留清理）

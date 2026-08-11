@@ -18,9 +18,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
 # ── 应用版本（唯一版本常量，A1 遗留修复）────────────────────
-# 前后端统一从这里读取；当前代码基线 v1.7.0。
+# 前后端统一从这里读取；当前代码基线 v1.8.0（最终交付）。
 # 升级版本时同步更新：web/package.json / web/package-lock.json / RELEASE-NOTES.md。
-APP_VERSION: str = "1.7.0"
+APP_VERSION: str = "1.8.0"
 
 
 class Settings(BaseSettings):

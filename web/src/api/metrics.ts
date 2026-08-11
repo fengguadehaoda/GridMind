@@ -1,6 +1,7 @@
 // GridMind M3c · 前端可观测性 API 客户端
 //
-// 复用 axios /api prefix（与 monitor.ts 等价），调用：
+// V1.8.0 final-audit（P1）：统一走共享 httpClient（401 自动 refresh 重放 +
+// Bearer 自动注入），复用 /api prefix（与 chat.ts 等价），调用：
 // - GET  /metrics       → Prometheus text 格式（沙箱调试用，前端一般不直接消费）
 // - GET  /metrics/summary → JSON 摘要（前端面板首选）
 // - GET  /grayscale/status     → 灰度状态
@@ -8,13 +9,8 @@
 // - POST /grayscale/set        → 管理员手动切流（X-Admin-Token）
 // - POST /grayscale/manual_rollback → 手动回滚（X-Admin-Token）
 
-import axios from 'axios'
+import httpClient from './httpClient'
 import type { AxiosRequestConfig } from 'axios'
-
-const http = axios.create({
-  baseURL: '/api',
-  timeout: 15000,
-})
 
 // ── 类型契约（与后端 MetricsCollector.get_summary() 对齐）────────────────
 
@@ -88,7 +84,7 @@ export interface GrayscaleHistoryResponse {
 export async function getMetricsSummary(
   config?: AxiosRequestConfig,
 ): Promise<MetricsSummary> {
-  const { data } = await http.get<MetricsSummary>('/metrics/summary', config)
+  const { data } = await httpClient.get<MetricsSummary>('/metrics/summary', config)
   return data
 }
 
@@ -96,7 +92,7 @@ export async function getMetricsSummary(
 export async function getMetricsPromText(
   config?: AxiosRequestConfig,
 ): Promise<string> {
-  const { data } = await http.get<string>('/metrics', {
+  const { data } = await httpClient.get<string>('/metrics', {
     ...config,
     responseType: 'text',
     transformResponse: [(d) => d],
@@ -110,7 +106,7 @@ export async function getMetricsPromText(
 export async function getGrayscaleStatus(
   config?: AxiosRequestConfig,
 ): Promise<GrayscaleStatus> {
-  const { data } = await http.get<GrayscaleStatus>('/grayscale/status', config)
+  const { data } = await httpClient.get<GrayscaleStatus>('/grayscale/status', config)
   return data
 }
 
@@ -119,7 +115,7 @@ export async function getGrayscaleHistory(
   limit = 20,
   config?: AxiosRequestConfig,
 ): Promise<GrayscaleHistoryResponse> {
-  const { data } = await http.get<GrayscaleHistoryResponse>(
+  const { data } = await httpClient.get<GrayscaleHistoryResponse>(
     '/grayscale/history',
     { ...config, params: { limit } },
   )
@@ -132,7 +128,7 @@ export async function grayscaleSet(
   adminToken: string,
   config?: AxiosRequestConfig,
 ): Promise<unknown> {
-  const { data } = await http.post('/grayscale/set', payload, {
+  const { data } = await httpClient.post('/grayscale/set', payload, {
     ...config,
     headers: {
       ...(config?.headers ?? {}),
@@ -148,7 +144,7 @@ export async function grayscaleManualRollback(
   adminToken: string,
   config?: AxiosRequestConfig,
 ): Promise<unknown> {
-  const { data } = await http.post('/grayscale/manual_rollback', payload, {
+  const { data } = await httpClient.post('/grayscale/manual_rollback', payload, {
     ...config,
     headers: {
       ...(config?.headers ?? {}),
@@ -189,6 +185,6 @@ export interface GrayscaleGraphResponse {
 export async function getGrayscaleGraph(
   config?: AxiosRequestConfig,
 ): Promise<GrayscaleGraphResponse> {
-  const { data } = await http.get<GrayscaleGraphResponse>('/grayscale/graph', config)
+  const { data } = await httpClient.get<GrayscaleGraphResponse>('/grayscale/graph', config)
   return data
 }

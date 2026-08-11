@@ -961,6 +961,26 @@ def _audit_visible_thread_ids(
     return ThreadStore().list_thread_ids_by_owner(user_id)
 
 
+@app.get("/audit/pending-count")
+async def audit_pending_count() -> dict[str, Any]:
+    """F3 HITL 队列徽标数据源：当前待审批 HITL 任务数（公开，轻量）。
+
+    P1-3 修复：前端 auditStore 每 5s 轮询本端点校正徽标计数（防 SSE 断连
+    漂移），但端点此前**未实现** → 每 5s 404（logs 刷屏）+ 徽标永久降级灰点。
+    现补实现：计数来自 ``sse_event_emitter`` 进程内登记
+    （``emit_hitl_interrupt`` 加入 / ``emit_hitl_resolved`` 移除）。
+
+    契约（前端 frontend-v151-architecture §1.3）：``{"count": int}``；
+    额外返回 ``lastUpdated``（UTC ISO）兼容文档契约字段。
+    """
+    import time
+
+    return {
+        "count": sse_event_emitter.get_pending_interrupt_count(),
+        "lastUpdated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+
 @app.get("/audit/hitl/{thread_id}", dependencies=[Depends(verify_audit_thread_access)])
 async def get_hitl_audit_log(thread_id: str) -> dict[str, Any]:
     """查询指定 thread_id 的 HITL 审计记录（P0：审计追溯）。

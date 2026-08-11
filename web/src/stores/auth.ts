@@ -32,6 +32,23 @@ export const REFRESH_TOKEN_KEY = authApi.REFRESH_TOKEN_KEY
 
 export type AuthStatus = 'idle' | 'loading' | 'authenticated' | 'anonymous'
 
+/**
+ * store 级单例 refresh Promise（P1 竞态修复，QA 记档项）。
+ *
+ * **问题**：受保护路由整页加载时存在多路并发 ``store.refresh()``：
+ *   1. ``main.ts`` ``void useAuthStore().hydrate()``（fire-and-forget）；
+ *   2. 生产路由守卫 ``status==='idle' && getRefreshToken()`` 再 ``await hydrate()``；
+ *   3. httpClient 401 拦截器（首帧请求未带 access → 401 → 触发 refresh）。
+ * 三路都会调用 ``refresh()`` → 对**同一 refresh token** 发起并发 /auth/refresh →
+ * 后端轮换使先到者成功、后到者 401 → ``clear()`` → 已登录用户被误登出。
+ *
+ * **修复**：本模块级 ``refreshInFlight`` 使同一时刻所有 ``refresh()`` 调用共享
+ * 同一个 /auth/refresh 请求（hydrate / 路由守卫 / 401 拦截器全部收敛为一次轮换），
+ * 其余调用 await 同一 Promise 拿同一新 access。配合后端 refresh 轮换原子化
+ * （BEGIN IMMEDIATE）双保险。
+ */
+let refreshInFlight: Promise<string> | null = null
+
 export const useAuthStore = defineStore('auth', () => {
   // ── State ──
   /** access token（仅内存；F5 后经 hydrate() 恢复） */
@@ -96,16 +113,29 @@ export const useAuthStore = defineStore('auth', () => {
   /**
    * 刷新：POST /auth/refresh → 轮换双 token → 返回新 access。
    * 供 httpClient 401 拦截器复用（单例 refreshPromise 并发去重）。
+   *
+   * P1 修复：模块级 ``refreshInFlight`` 单例去重——hydrate / 路由守卫 /
+   * 401 拦截器并发调用时共享同一 /auth/refresh 请求（同一 refresh token
+   * 只轮换一次，杜绝后端轮换竞态导致误登出）。
    */
   async function refresh(): Promise<string> {
+    // 已有 in-flight 轮换 → 直接复用（并发去重核心）
+    if (refreshInFlight) return refreshInFlight
+
     const rt = authApi.getRefreshToken()
     if (!rt) {
       clear()
       throw new Error('no refresh token')
     }
-    const resp = await authApi.refresh(rt)
-    applyLoginResponse(resp)
-    return resp.access_token
+
+    refreshInFlight = (async () => {
+      const resp = await authApi.refresh(rt)
+      applyLoginResponse(resp)
+      return resp.access_token
+    })().finally(() => {
+      refreshInFlight = null
+    })
+    return refreshInFlight
   }
 
   /** 登出：尽力 revoke refresh → clear（不抛错） */

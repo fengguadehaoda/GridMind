@@ -110,3 +110,7 @@ benchmarks/results/
 *.iml
 *.iws
 .history/
+
+# 构建产物/临时目录（发布忽略）
+dist.*
+qa-tmp-cleanup/

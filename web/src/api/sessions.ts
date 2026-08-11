@@ -8,20 +8,13 @@
  *   - POST   /sessions/{thread_id}/restore  → SessionActionResponse
  *   - DELETE /sessions/{thread_id}          → SessionActionResponse（软删）
  *
- * 全部带 ``getAuthHeaders()``（与 api/chat.ts 一致：VITE_API_BASE → '/api'）。
+ * V1.8.0 final-audit（P1）：统一复用共享 httpClient（401 自动 refresh 重放 +
+ * Bearer 自动注入）——此前自建 axios 实例，生产 15min access TTL 过期后
+ * 会话列表/重命名/归档/恢复/删除全部 401 且不自动续期，功能中断。
  * 作者：寇豆码（工程师）
  */
-import axios from 'axios'
+import httpClient from './httpClient'
 import type { SessionsResponse, SessionSummary, SessionActionResponse } from '../types'
-import { getAuthHeaders } from '../composables/useJwtAuth'
-import { resolveBaseUrl } from './chat'
-
-const BASE = resolveBaseUrl()
-
-const http = axios.create({
-  baseURL: BASE,
-  timeout: 30000,
-})
 
 /** 归档态过滤参数（与后端 ``archived`` query 对齐：0|1|2|all） */
 export type SessionArchivedFilter = 0 | 1 | 2 | 'all'
@@ -32,9 +25,8 @@ export type SessionArchivedFilter = 0 | 1 | 2 | 'all'
  * @param archived - 缺省不传 = 后端默认 0（活跃）；1=归档 2=删除 all=全状态
  */
 export async function fetchSessions(archived?: SessionArchivedFilter): Promise<SessionsResponse> {
-  const { data } = await http.get<SessionsResponse>('/sessions', {
+  const { data } = await httpClient.get<SessionsResponse>('/sessions', {
     params: archived !== undefined ? { archived: String(archived) } : undefined,
-    headers: getAuthHeaders(),
   })
   return data
 }
@@ -46,39 +38,33 @@ export async function fetchSessions(archived?: SessionArchivedFilter): Promise<S
  * @param title    - 新标题（后端校验非空 ≤100，非法 → 422）
  */
 export async function renameSession(threadId: string, title: string): Promise<SessionSummary> {
-  const { data } = await http.patch<SessionSummary>(
+  const { data } = await httpClient.patch<SessionSummary>(
     `/sessions/${encodeURIComponent(threadId)}`,
     { title },
-    { headers: getAuthHeaders() },
   )
   return data
 }
 
 /** POST /sessions/{thread_id}/archive — 归档会话（archived=1） */
 export async function archiveSession(threadId: string): Promise<SessionActionResponse> {
-  const { data } = await http.post<SessionActionResponse>(
+  const { data } = await httpClient.post<SessionActionResponse>(
     `/sessions/${encodeURIComponent(threadId)}/archive`,
-    undefined,
-    { headers: getAuthHeaders() },
   )
   return data
 }
 
 /** POST /sessions/{thread_id}/restore — 恢复归档会话（archived=0） */
 export async function restoreSession(threadId: string): Promise<SessionActionResponse> {
-  const { data } = await http.post<SessionActionResponse>(
+  const { data } = await httpClient.post<SessionActionResponse>(
     `/sessions/${encodeURIComponent(threadId)}/restore`,
-    undefined,
-    { headers: getAuthHeaders() },
   )
   return data
 }
 
 /** DELETE /sessions/{thread_id} — 软删会话（archived=2 + deleted_at） */
 export async function deleteSession(threadId: string): Promise<SessionActionResponse> {
-  const { data } = await http.delete<SessionActionResponse>(
+  const { data } = await httpClient.delete<SessionActionResponse>(
     `/sessions/${encodeURIComponent(threadId)}`,
-    { headers: getAuthHeaders() },
   )
   return data
 }

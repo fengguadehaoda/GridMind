@@ -1,18 +1,17 @@
-/** v1.4.0 HITL 审计 API */
-import axios from 'axios'
+/** v1.4.0 HITL 审计 API
+ *
+ * V1.8.0 final-audit（P1）：统一走共享 httpClient——401 自动 refresh 重放 +
+ * Bearer 自动注入；生产 access TTL 过期后审计页不再中断。
+ */
+import httpClient from './httpClient'
 import type { AuditEntry, AuditResponse, HitlAuditDecision } from '../types'
-
-const http = axios.create({
-  baseURL: '/api',
-  timeout: 30000,
-})
 
 /** GET /audit/hitl?decision=&limit= */
 export async function fetchAuditLog(
   decision?: HitlAuditDecision,
   limit = 50,
 ): Promise<AuditResponse> {
-  const { data } = await http.get<AuditResponse>('/audit/hitl', {
+  const { data } = await httpClient.get<AuditResponse>('/audit/hitl', {
     params: { decision, limit },
   })
   return data
@@ -20,7 +19,7 @@ export async function fetchAuditLog(
 
 /** GET /audit/hitl/{thread_id} */
 export async function fetchAuditByThread(threadId: string): Promise<AuditResponse> {
-  const { data } = await http.get<AuditResponse>(`/audit/hitl/${threadId}`)
+  const { data } = await httpClient.get<AuditResponse>(`/audit/hitl/${threadId}`)
   return data
 }
 
@@ -29,12 +28,12 @@ export async function fetchMetricsSummary(): Promise<{
   enabled: boolean
   metrics: Record<string, unknown>
 }> {
-  const { data } = await http.get('/metrics/summary')
+  const { data } = await httpClient.get('/metrics/summary')
   return data
 }
 
 /** GET /health/critical */
 export async function fetchCriticalHealth(): Promise<{ devices: unknown[]; count: number }> {
-  const { data } = await http.get('/health/critical')
+  const { data } = await httpClient.get('/health/critical')
   return data
 }
