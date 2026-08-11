@@ -1,6 +1,7 @@
 """V1.7.0 多用户地基 · T2 RBAC 角色矩阵测试（P1-1 + P1-2 + P1-3）。
 
-**范围**（架构 multiuser-architecture Task 2 验收 + PRD §四 矩阵逐项）：
+**范围**（架构 multiuser-architecture Task 2 验收 + PRD §四 矩阵逐项 +
+register-rbac Task 2 一致性守护）：
 1. 5 角色解析：dispatcher / operator / kb_admin / auditor / admin；
    缺 role claim / 未知 role → 默认 dispatcher（不 500）；
 2. 灰度读（status/history/metrics）+ 写（set/manual_rollback）：
@@ -9,7 +10,11 @@
 4. KB 写：调度员/运维/审计 → 403；知识管理员/管理员 → 放行；
    KB 读：任意角色放行（全局共享，D3）；
 5. 审计列表按角色过滤：调度员/知识管理员仅本人 thread；审计/运维/管理员全量；
-6. 模型切换：无 thread_id 全员可用（US-2.3）；有 thread_id 受 owner 校验。
+6. 模型切换：无 thread_id 全员可用（US-2.3）；有 thread_id 受 owner 校验；
+7. 权限矩阵权威定义一致性守护：矩阵允许角色 == 各端点 require_role 实参
+   + owner 语义（scope own/all），任一漂移 → 红；
+8. GET /rbac/matrix 端点：admin 200 / dispatcher 403 / dev 放行 /
+   X-Admin-Token 等效 / 响应与权威定义逐字段一致。
 
 **隔离**：主库切 tmp（database + hitl_audit_service 两处 get_connection），
 reload 鉴权栈让 APP_ENV=production 生效；teardown 复位 dev。
@@ -517,3 +522,292 @@ def _request(
     if method == "GET":
         return client.get(path, headers=headers)
     return client.post(path, json=body or {}, headers=headers)
+
+
+# ═══════════════════════════════════════════════════════
+# 7. 权限矩阵权威定义 + 一致性守护（register-rbac T2）
+#    矩阵允许角色 == 各端点 Depends(require_role(...)) 实参 + owner 语义，
+#    任一漂移 → 测试红（架构 register-rbac 共享知识 #4）。
+# ═══════════════════════════════════════════════════════
+
+_CATEGORIES = ("session", "grayscale", "kb_write", "kb_read", "audit", "system", "model")
+
+
+def test_matrix_structure_5x7() -> None:
+    """ROLE_CATEGORY_MATRIX：恰好 5 角色 × 7 类别，键与 ROLE_VALUES/元信息一致。"""
+    from api.services.rbac import ROLE_VALUES
+    from api.services.rbac_matrix import (
+        CATEGORY_META,
+        ROLE_CATEGORY_MATRIX,
+        ROLE_META,
+    )
+
+    assert set(ROLE_CATEGORY_MATRIX.keys()) == set(ROLE_VALUES)
+    for role, row in ROLE_CATEGORY_MATRIX.items():
+        assert set(row.keys()) == set(_CATEGORIES), f"{role} 类别缺失/多余"
+        assert all(isinstance(v, bool) for v in row.values())
+        assert role in ROLE_META, f"ROLE_META 缺 {role}"
+    # 所有类别都有元信息（行头悬浮 endpoints 数据源）
+    assert set(CATEGORY_META.keys()) == set(_CATEGORIES)
+    for cat in _CATEGORIES:
+        assert CATEGORY_META[cat]["label"]
+        assert CATEGORY_META[cat]["description"]
+        assert CATEGORY_META[cat]["endpoints"]
+
+
+def test_matrix_allowed_roles_match_require_role_call_sites() -> None:
+    """逐类别：矩阵允许角色 == 各端点 Depends(require_role(...)) 实参。
+
+    实参来源（grep 现状，register-rbac 基线）：
+    - 灰度（/grayscale/* 5 端点）          → require_role(OPERATOR, ADMIN)
+    - 系统（/admin/checkpoint-stats、/debug/*）→ require_role(OPERATOR, ADMIN)
+    - KB 写（knowledge_upload.py 2 端点）  → require_role(KB_ADMIN, ADMIN)
+    - KB 读（GET /api/knowledge/uploads）  → verify_jwt_if_prod（全员）
+    - 会话 / 模型 / 审计                   → 全员 + owner 语义（见 scope 断言）
+    """
+    from api.services.rbac import ROLE_VALUES
+    from api.services.rbac_matrix import ROLE_CATEGORY_MATRIX
+
+    def allowed(cat: str) -> set[str]:
+        return {r for r in ROLE_VALUES if ROLE_CATEGORY_MATRIX[r][cat]}
+
+    # 灰度 / 系统：require_role(OPERATOR, ADMIN)
+    assert allowed("grayscale") == {"operator", "admin"}
+    assert allowed("system") == {"operator", "admin"}
+    # KB 写：require_role(KB_ADMIN, ADMIN)
+    assert allowed("kb_write") == {"kb_admin", "admin"}
+    # KB 读 / 会话 / 审计 / 模型：全员（认证即可）
+    for cat in ("kb_read", "session", "audit", "model"):
+        assert allowed(cat) == set(ROLE_VALUES), f"{cat} 应全员可访问"
+
+
+def test_matrix_scope_consistency_with_owner_semantics() -> None:
+    """scope（own/all）与 owner 语义一致（共享知识 #5 + multiuser §3.4）。
+
+    - 会话：dispatcher/operator/kb_admin/auditor 仅本人（own），admin 全量（all）；
+    - 审计：dispatcher/kb_admin 仅本人（own），AUDIT_FULL_ACCESS_ROLES
+      （auditor/operator/admin）全量（all）。
+    """
+    from api.services.rbac import AUDIT_FULL_ACCESS_ROLES, ROLE_VALUES, Role
+    from api.services.rbac_matrix import SCOPE_MATRIX
+
+    full_roles = {r.value for r in AUDIT_FULL_ACCESS_ROLES}
+    own_roles = set(ROLE_VALUES) - full_roles  # dispatcher / kb_admin
+
+    # 会话 scope
+    session_scope = SCOPE_MATRIX["session"]
+    assert session_scope["dispatcher"] == "own"
+    assert session_scope["operator"] == "own"
+    assert session_scope["kb_admin"] == "own"
+    assert session_scope["auditor"] == "own"
+    assert session_scope["admin"] == "all"
+    # 审计 scope：own == 非全量角色；all == AUDIT_FULL_ACCESS_ROLES
+    audit_scope = SCOPE_MATRIX["audit"]
+    for role in own_roles:
+        assert audit_scope[role] == "own", f"审计 {role} 应仅本人"
+    for role in full_roles:
+        assert audit_scope[role] == "all", f"审计 {role} 应全量"
+
+
+def _iter_api_routes(main_mod: Any):
+    """收集 app 全部 APIRoute（顶层 + 各 include_router 的 router.routes）。
+
+    直接遍历 ``main.py`` 模块级 router 引用（auth/users/rbac/knowledge/
+    feature_intro），避免依赖 ``app.routes`` 中 ``_IncludedRouter`` 的
+    嵌套结构（FastAPI 版本相关、易漂移）。
+    """
+    routers = [
+        main_mod.app,
+        getattr(main_mod, "auth_router", None),
+        getattr(main_mod, "users_router", None),
+        getattr(main_mod, "rbac_router", None),
+        getattr(main_mod, "knowledge_upload_router", None),
+        getattr(main_mod, "feature_intro_router", None),
+    ]
+    for router in routers:
+        if router is None:
+            continue
+        routes = getattr(router, "routes", None)
+        if routes is None:
+            continue
+        for route in routes:
+            if hasattr(route, "dependant"):
+                yield route
+
+
+def test_matrix_drift_guard_introspects_require_role_deps(
+    prod_client: TestClient,
+) -> None:
+    """防漂移守卫：扫描 app 全部路由（含 include_router）的 require_role 依赖，
+    断言与矩阵一致。
+
+    - 灰度/系统/KB 写类别前缀路由的 require_role 角色集 == 矩阵允许角色；
+    - /users*、/rbac/matrix 为 admin-only（用户管理不在 7 类别，属页面级守卫）。
+    若新增端点引入新权限类别而不同步矩阵 → 本测试红。
+    """
+    import inspect
+
+    from api.services.rbac import ROLE_VALUES
+    from api.services.rbac_matrix import ROLE_CATEGORY_MATRIX
+
+    import api.main as main_mod
+
+    # 路由前缀 → 矩阵类别（与 require_role 调用点一一对应）
+    category_hints = [
+        ("/grayscale/", "grayscale"),
+        ("/debug/", "system"),
+        ("/admin/checkpoint-stats", "system"),
+        ("/api/knowledge/upload", "kb_write"),
+        ("/api/knowledge/uploads/", "kb_write"),
+    ]
+
+    def allowed(cat: str) -> set[str]:
+        return {r for r in ROLE_VALUES if ROLE_CATEGORY_MATRIX[r][cat]}
+
+    checked: list[str] = []
+    for route in _iter_api_routes(main_mod):
+        dependant = getattr(route, "dependant", None)
+        if dependant is None:
+            continue
+        for dep in dependant.dependencies:
+            call = getattr(dep, "call", None)
+            if call is None:
+                continue
+            try:
+                closure = inspect.getclosurevars(call).nonlocals
+            except (TypeError, ValueError):
+                continue
+            allowed_set = closure.get("allowed")
+            if not isinstance(allowed_set, frozenset):
+                continue
+            # 注意：reload 鉴权栈后，未 reload 的 router 闭包持有旧代 Role 枚举
+            # 成员（isinstance 新旧类不相等）。统一取 .value 字符串值，跨代稳定。
+            route_roles = frozenset(
+                getattr(r, "value", r) for r in allowed_set
+            )
+            if not route_roles:
+                continue
+            path = route.path
+            # 用户管理 / 矩阵端点：admin-only（非 7 类别，单独守护）
+            if path.startswith("/users") or path.startswith("/rbac/"):
+                assert route_roles == frozenset({"admin"}), (
+                    f"{path} 应 admin-only，实际 {sorted(route_roles)}"
+                )
+                checked.append(path)
+                continue
+            matched = False
+            for prefix, cat in category_hints:
+                if path.startswith(prefix):
+                    assert route_roles == frozenset(allowed(cat)), (
+                        f"{path} require_role={sorted(route_roles)} "
+                        f"≠ 矩阵[{cat}]={sorted(allowed(cat))}（漂移！同步矩阵或测试）"
+                    )
+                    checked.append(path)
+                    matched = True
+                    break
+            assert matched, (
+                f"{path} 使用 require_role={sorted(route_roles)} 但未映射到矩阵类别"
+            )
+
+    # 必须至少检查到灰度/系统/KB 写全部调用点（防漏检）
+    expected_paths = {
+        "/grayscale/status", "/grayscale/set", "/grayscale/history",
+        "/grayscale/metrics", "/grayscale/manual_rollback",
+        "/debug/sync_lag", "/debug/sync_force", "/admin/checkpoint-stats",
+        "/api/knowledge/upload", "/api/knowledge/uploads/{doc_id}",
+    }
+    assert expected_paths.issubset(set(checked)), (
+        f"漏检 require_role 调用点：{expected_paths - set(checked)}"
+    )
+
+
+def test_serialize_matrix_shape() -> None:
+    """serialize_matrix：roles/categories/matrix/scope/generated_at 结构正确。"""
+    from api.services.rbac import ROLE_VALUES
+    from api.services.rbac_matrix import (
+        CATEGORY_META,
+        ROLE_CATEGORY_MATRIX,
+        ROLE_META,
+        SCOPE_MATRIX,
+        serialize_matrix,
+    )
+
+    data = serialize_matrix()
+    assert set(data.keys()) == {"roles", "categories", "matrix", "scope", "generated_at"}
+
+    assert [r["key"] for r in data["roles"]] == sorted(ROLE_VALUES)
+    for r in data["roles"]:
+        assert set(r.keys()) == {"key", "label", "description"}
+        assert r["label"] == ROLE_META[r["key"]]["label"]
+        assert r["description"] == ROLE_META[r["key"]]["description"]
+
+    assert [c["key"] for c in data["categories"]] == list(ROLE_CATEGORY_MATRIX["dispatcher"])
+    for c in data["categories"]:
+        assert set(c.keys()) == {"key", "label", "description", "endpoints"}
+        assert c["endpoints"] == CATEGORY_META[c["key"]]["endpoints"]
+        assert c["endpoints"]
+
+    assert data["matrix"] == ROLE_CATEGORY_MATRIX
+    assert data["scope"] == SCOPE_MATRIX
+    assert data["generated_at"]  # 非空 ISO
+
+
+# ═══════════════════════════════════════════════════════
+# 8. GET /rbac/matrix 端点测试（register-rbac T2）
+# ═══════════════════════════════════════════════════════
+
+
+def test_rbac_matrix_admin_200(prod_client: TestClient) -> None:
+    """管理员（生产 JWT role=admin）→ 200 矩阵完整。"""
+    resp = prod_client.get("/rbac/matrix", headers=_jwt_headers("admin-u", "admin"))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body.keys()) == {"roles", "categories", "matrix", "scope", "generated_at"}
+    assert len(body["roles"]) == 5
+    assert len(body["categories"]) == 7
+    for role_row in body["matrix"].values():
+        assert set(role_row.keys()) == set(_CATEGORIES)
+
+
+def test_rbac_matrix_dispatcher_403(prod_client: TestClient) -> None:
+    """调度员（生产 JWT role=dispatcher）→ 403（矩阵仅 admin，拍板 4）。"""
+    resp = prod_client.get("/rbac/matrix", headers=_jwt_headers("d1", "dispatcher"))
+    assert resp.status_code == 403, f"调度员应 403，实际 {resp.status_code}: {resp.text}"
+
+
+def test_rbac_matrix_dev_anonymous_200(dev_client: TestClient) -> None:
+    """dev 匿名 → 200（require_role dev 放行，便于前端联调）。"""
+    resp = dev_client.get("/rbac/matrix")
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()["roles"]) == 5
+
+
+def test_rbac_matrix_admin_token_equivalent(prod_client: TestClient) -> None:
+    """X-Admin-Token → 200（等效管理员，二选一通过）。"""
+    resp = prod_client.get("/rbac/matrix", headers={"X-Admin-Token": TEST_ADMIN_TOKEN})
+    assert resp.status_code == 200, resp.text
+
+
+def test_rbac_matrix_response_matches_authoritative_definition(
+    prod_client: TestClient,
+) -> None:
+    """端点响应与单一权威定义逐字段一致（前端零硬编码的数据源）。"""
+    from api.services.rbac_matrix import ROLE_CATEGORY_MATRIX, SCOPE_MATRIX, serialize_matrix
+
+    resp = prod_client.get("/rbac/matrix", headers=_jwt_headers("admin-u", "admin"))
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["matrix"] == ROLE_CATEGORY_MATRIX
+    assert body["scope"] == SCOPE_MATRIX
+    # roles/categories 顺序与 serialize_matrix 一致
+    expected = serialize_matrix()
+    assert [r["key"] for r in body["roles"]] == [r["key"] for r in expected["roles"]]
+    assert [c["key"] for c in body["categories"]] == [c["key"] for c in expected["categories"]]
+    # 语义对齐 multiuser-architecture §3.4：核心格断言
+    assert body["matrix"]["dispatcher"]["session"] is True
+    assert body["matrix"]["dispatcher"]["grayscale"] is False
+    assert body["matrix"]["kb_admin"]["kb_write"] is True
+    assert body["matrix"]["operator"]["system"] is True
+    assert body["matrix"]["auditor"]["audit"] is True
+    assert body["matrix"]["admin"]["kb_write"] is True

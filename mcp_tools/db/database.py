@@ -302,6 +302,31 @@ def _ensure_auth_tables(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_users_email_unique(conn: sqlite3.Connection) -> None:
+    """V1.8.0 增量（register-rbac T1）· users.email 非空唯一索引。
+
+    **背景（架构与代码冲突，按架构执行）**：PRD AC1-4/AC2-5 与 register-rbac
+    架构 §五均要求「邮箱已占用 → 409 邮箱已被使用」，``create_user`` 也已按
+    ``sqlite3.IntegrityError``（email）映射 409；但 users 表 DDL 的 email 列
+    **缺少 UNIQUE 约束**（历史基线缺陷），导致重复邮箱可 INSERT（409 兜底失效）。
+    此处补齐 ``idx_users_email`` 唯一索引（NULL 不参与唯一性——「非空时唯一」，
+    与 ``create_user`` 的 ``email_norm = ... or None`` 语义一致）。
+
+    存量库若已存在重复邮箱（历史脏数据）→ 建索引抛 IntegrityError，**跳过并
+    告警，绝不阻断启动**（对齐 init_db 幂等迁移的既有降级语义）。
+    """
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)"
+        )
+    except sqlite3.IntegrityError as e:
+        logger.warning(
+            "users.email 唯一索引创建失败（存量重复邮箱）：{}；"
+            "注册邮箱冲突将退化为允许重复（建议清理脏数据后重建索引）",
+            e,
+        )
+
+
 def init_db() -> None:
     """初始化数据库表结构。"""
     conn = get_connection()
@@ -563,6 +588,8 @@ def init_db() -> None:
         # V1.8.0 认证（T01）：补齐 users / refresh_tokens / auth_audit_log 三表
         # + 索引（CREATE IF NOT EXISTS 幂等；存量库升级 / 重复 init_db 零副作用）
         _ensure_auth_tables(conn)
+        # V1.8.0 增量（register-rbac T1）：users.email 非空唯一索引（409 兜底生效）
+        _ensure_users_email_unique(conn)
         conn.commit()
     finally:
         conn.close()

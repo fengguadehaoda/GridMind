@@ -8,7 +8,9 @@
   - 编辑：改角色 / 禁用开关 / 重置密码（密码策略前端轻校验，后端兜底）；
   - 新建后提示「用户需在首次登录时修改密码」；
   - 仅 admin 路由（/admin/users，meta.roles=['admin']）可访问，后端
-    require_role(ADMIN) 兜底。
+    require_role(ADMIN) 兜底；
+  - register-rbac T4：外层 el-tabs——Tab1「用户列表」（现有内容整体搬入，
+    零逻辑改动）、Tab2「权限矩阵」（只读 RbacMatrixTable，数据仅来自后端）。
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -->
 <script setup lang="ts">
@@ -17,6 +19,10 @@ import { ElMessage } from 'element-plus'
 import { Plus, Refresh, Search } from '@element-plus/icons-vue'
 import { createUser, fetchUsers, updateUser } from '../api/auth'
 import type { Role, UserSummary } from '../types'
+import RbacMatrixTable from '../components/controls/RbacMatrixTable.vue'
+
+/** 外层 Tab：用户列表 / 权限矩阵（register-rbac T4） */
+const activeTab = ref<'users' | 'matrix'>('users')
 
 /** 角色下拉（与后端 5 角色枚举一致） */
 const ROLE_OPTIONS: Array<{ value: Role; label: string; type: 'primary' | 'success' | 'warning' | 'info' | 'danger' }> = [
@@ -205,99 +211,109 @@ onMounted(load)
       </div>
     </div>
 
-    <el-table
-      v-loading="loading"
-      :data="users"
-      border
-      stripe
-      class="users-table"
-      data-test="users-table"
-    >
-      <el-table-column prop="username" label="用户名" min-width="140" />
-      <el-table-column label="角色" width="130">
-        <template #default="{ row }">
-          <el-tag size="small" :type="roleType(row.role as Role)" effect="dark">
-            {{ roleLabel(row.role as Role) }}
-          </el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="100">
-        <template #default="{ row }">
-          <span :class="['users-status', row.disabled ? 'is-disabled' : 'is-active']">
-            ● {{ row.disabled ? '禁用' : '启用' }}
-          </span>
-        </template>
-      </el-table-column>
-      <el-table-column label="最近登录" min-width="170">
-        <template #default="{ row }">{{ formatTime(row.last_login_at) }}</template>
-      </el-table-column>
-      <el-table-column label="创建时间" min-width="170">
-        <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
-      </el-table-column>
-      <el-table-column label="操作" width="150" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" text type="primary" data-test="users-edit" @click="openEdit(row)">
-            编辑
-          </el-button>
-          <el-button
-            size="small"
-            text
-            :type="row.disabled ? 'success' : 'danger'"
-            data-test="users-toggle"
-            @click="toggleDisabled(row)"
-          >
-            {{ row.disabled ? '启用' : '禁用' }}
-          </el-button>
-        </template>
-      </el-table-column>
-      <template #empty>
-        <el-empty description="暂无用户" />
-      </template>
-    </el-table>
+    <el-tabs v-model="activeTab" class="users-tabs" data-test="users-tabs">
+      <!-- Tab1：用户列表（现有表格/过滤/对话框整体搬入，零逻辑改动） -->
+      <el-tab-pane label="用户列表" name="users">
+        <el-table
+          v-loading="loading"
+          :data="users"
+          border
+          stripe
+          class="users-table"
+          data-test="users-table"
+        >
+          <el-table-column prop="username" label="用户名" min-width="140" />
+          <el-table-column label="角色" width="130">
+            <template #default="{ row }">
+              <el-tag size="small" :type="roleType(row.role as Role)" effect="dark">
+                {{ roleLabel(row.role as Role) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }">
+              <span :class="['users-status', row.disabled ? 'is-disabled' : 'is-active']">
+                ● {{ row.disabled ? '禁用' : '启用' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="最近登录" min-width="170">
+            <template #default="{ row }">{{ formatTime(row.last_login_at) }}</template>
+          </el-table-column>
+          <el-table-column label="创建时间" min-width="170">
+            <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="150" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" text type="primary" data-test="users-edit" @click="openEdit(row)">
+                编辑
+              </el-button>
+              <el-button
+                size="small"
+                text
+                :type="row.disabled ? 'success' : 'danger'"
+                data-test="users-toggle"
+                @click="toggleDisabled(row)"
+              >
+                {{ row.disabled ? '启用' : '禁用' }}
+              </el-button>
+            </template>
+          </el-table-column>
+          <template #empty>
+            <el-empty description="暂无用户" />
+          </template>
+        </el-table>
 
-    <div class="users-total">共 {{ total }} 个用户</div>
+        <div class="users-total">共 {{ total }} 个用户</div>
 
-    <!-- 新建 / 编辑对话框 -->
-    <el-dialog
-      v-model="dialogVisible"
-      :title="editing ? '编辑用户' : '新建用户'"
-      width="440px"
-      append-to-body
-      data-test="users-dialog"
-    >
-      <el-form label-position="top" class="users-form">
-        <el-form-item label="用户名">
-          <el-input v-model="form.username" :disabled="!!editing" placeholder="小写字母/数字/_ - ." data-test="users-form-username" />
-        </el-form-item>
-        <el-form-item label="邮箱（可选）">
-          <el-input v-model="form.email" placeholder="user@example.com" data-test="users-form-email" />
-        </el-form-item>
-        <el-form-item :label="editing ? '重置密码（留空则不修改）' : '初始密码'">
-          <el-input
-            v-model="form.password"
-            type="password"
-            :show-password="true"
-            placeholder="至少 8 位，含数字和字母"
-            data-test="users-form-password"
-          />
-        </el-form-item>
-        <el-form-item label="角色">
-          <el-select v-model="form.role" class="users-form-role" data-test="users-form-role">
-            <el-option v-for="r in ROLE_OPTIONS" :key="r.value" :label="r.label" :value="r.value" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="禁用账号">
-          <el-switch v-model="form.disabled" data-test="users-form-disabled" />
-          <span class="users-form-hint">禁用后该用户登录 / 刷新 / 查询本人信息均被拒绝</span>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" data-test="users-form-submit" @click="onSubmit">
-          保存
-        </el-button>
-      </template>
-    </el-dialog>
+        <!-- 新建 / 编辑对话框 -->
+        <el-dialog
+          v-model="dialogVisible"
+          :title="editing ? '编辑用户' : '新建用户'"
+          width="440px"
+          append-to-body
+          data-test="users-dialog"
+        >
+          <el-form label-position="top" class="users-form">
+            <el-form-item label="用户名">
+              <el-input v-model="form.username" :disabled="!!editing" placeholder="小写字母/数字/_ - ." data-test="users-form-username" />
+            </el-form-item>
+            <el-form-item label="邮箱（可选）">
+              <el-input v-model="form.email" placeholder="user@example.com" data-test="users-form-email" />
+            </el-form-item>
+            <el-form-item :label="editing ? '重置密码（留空则不修改）' : '初始密码'">
+              <el-input
+                v-model="form.password"
+                type="password"
+                :show-password="true"
+                placeholder="至少 8 位，含数字和字母"
+                data-test="users-form-password"
+              />
+            </el-form-item>
+            <el-form-item label="角色">
+              <el-select v-model="form.role" class="users-form-role" data-test="users-form-role">
+                <el-option v-for="r in ROLE_OPTIONS" :key="r.value" :label="r.label" :value="r.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="禁用账号">
+              <el-switch v-model="form.disabled" data-test="users-form-disabled" />
+              <span class="users-form-hint">禁用后该用户登录 / 刷新 / 查询本人信息均被拒绝</span>
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="dialogVisible = false">取消</el-button>
+            <el-button type="primary" :loading="submitting" data-test="users-form-submit" @click="onSubmit">
+              保存
+            </el-button>
+          </template>
+        </el-dialog>
+      </el-tab-pane>
+
+      <!-- Tab2：权限矩阵（只读；数据仅来自后端 GET /rbac/matrix） -->
+      <el-tab-pane label="权限矩阵" name="matrix" lazy>
+        <RbacMatrixTable />
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
@@ -338,6 +354,14 @@ onMounted(load)
 
 .users-filter {
   width: 130px;
+}
+
+.users-tabs {
+  width: 100%;
+
+  :deep(.el-tabs__content) {
+    padding-top: var(--space-2);
+  }
 }
 
 .users-table {

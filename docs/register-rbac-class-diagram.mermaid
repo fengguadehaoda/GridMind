@@ -1,0 +1,117 @@
+classDiagram
+    class RegisterRequest {
+        +str username
+        +str password
+        +str|None email
+    }
+    class LoginResponse {
+        +str access_token
+        +str refresh_token
+        +str token_type
+        +int expires_in
+        +bool mfa_required
+        +LoginUserInfo user
+    }
+    class RbacRoleMeta {
+        +str key
+        +str label
+        +str description
+    }
+    class RbacCategoryMeta {
+        +str key
+        +str label
+        +str description
+        +list~str~ endpoints
+    }
+    class RbacMatrixResponse {
+        +list~RbacRoleMeta~ roles
+        +list~RbacCategoryMeta~ categories
+        +dict matrix
+        +dict scope
+        +str generated_at
+    }
+    class AuthService {
+        +login(username, password, ip, ua) dict
+        +register(username, password, email, ip, ua) dict
+        +refresh(refresh_token, ip, ua) dict
+        +logout(refresh_token) None
+        +get_me(user_id) dict
+        +change_password(user_id, old, new, ip, ua) None
+        +dev_login(role, ip, ua) dict
+        -_issue_tokens(user, ip, ua, event) dict
+        -_build_access_token(user) str
+        -_generate_refresh_token(user, ip, ua) str
+    }
+    class UserService {
+        +create_user(username, password, role, email, actor_id, ip, ua, must_change_password, user_id) dict
+        +get_by_username(username) dict
+        +update_user(user_id, role, disabled, password, actor_id, ip, ua) dict
+        -_validate_password(password) None
+        -_hash_password(password) str
+    }
+    class AuthAuditService {
+        +record(event_type, user_id, username, ip, ua, detail) None
+    }
+    class RbacMatrixModule {
+        +dict ROLE_CATEGORY_MATRIX
+        +dict SCOPE_MATRIX
+        +dict ROLE_META
+        +dict CATEGORY_META
+        +serialize_matrix() dict
+    }
+    class AuthRouter {
+        +POST /auth/login
+        +POST /auth/register
+        +POST /auth/refresh
+        +POST /auth/logout
+        +GET /auth/me
+        +POST /auth/change-password
+        +POST /auth/dev-login
+    }
+    class RbacRouter {
+        +GET /rbac/matrix
+    }
+    class authStore {
+        +accessToken string
+        +user AuthUser
+        +status AuthStatus
+        +login(username, password) Promise
+        +register(username, password, email) Promise
+        +refresh() Promise
+        +logout() Promise
+        +hydrate() Promise
+        -applyLoginResponse(resp) void
+    }
+    class authApi {
+        +login(username, password) Promise
+        +register(payload) Promise
+        +fetchRbacMatrix() Promise
+        +refresh(token) Promise
+        +logout(token) Promise
+    }
+    class LoginView {
+        +mode login|register
+        +registerForm reactive
+        +onSubmitRegister() Promise
+    }
+    class UsersView {
+        +el-tabs activeTab
+        +RbacMatrixTable matrixTab
+    }
+    class RbacMatrixTable {
+        +matrix RbacMatrixResponse|None
+        +loading boolean
+        +error string
+        +load() Promise
+        +retry() Promise
+    }
+
+    AuthService --> UserService : create_user (register)
+    AuthService --> AuthAuditService : register_success/register_failed
+    AuthRouter --> AuthService : delegates
+    RbacRouter --> RbacMatrixModule : serialize_matrix
+    RbacRouter --> require_role(Role.ADMIN) : Depends
+    authStore --> authApi : via httpClient
+    LoginView --> authStore : register()
+    UsersView --> RbacMatrixTable : mounts
+    RbacMatrixTable --> authApi : fetchRbacMatrix()

@@ -32,6 +32,18 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=256)
 
 
+class RegisterRequest(BaseModel):
+    """POST /auth/register 请求体（**不含 role**——固定 dispatcher，防注册即提权）。
+
+    即使客户端恶意传 ``role``，Pydantic 默认 ``extra="ignore"`` 静默忽略，
+    后端固定 ``role="dispatcher"``（架构 register-rbac 拍板 3 + PRD §八 2）。
+    """
+
+    username: str = Field(..., min_length=1, max_length=128)
+    password: str = Field(..., min_length=1, max_length=256)
+    email: str | None = Field(default=None, max_length=256)   # 可选（与 create_user 一致，拍板 3）
+
+
 class LoginUserInfo(BaseModel):
     """登录成功响应中的用户摘要（不含敏感字段）。"""
 

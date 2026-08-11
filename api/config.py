@@ -120,6 +120,9 @@ class Settings(BaseSettings):
     admin_initial_password: str = os.getenv("ADMIN_INITIAL_PASSWORD", "")
     # /auth/login 每 IP 限流（次/分钟），slowapi 用（per-IP 第二层防线）
     login_rate_limit_per_minute: int = int(os.getenv("LOGIN_RATE_LIMIT_PER_MINUTE", "10"))
+    # /auth/register 每 IP 限流（次/分钟），slowapi 用（开放注册防滥用第一层；
+    # 比 login 10/min 更严，默认 5/min；REGISTER_RATE_LIMIT_PER_MINUTE 可配）
+    register_rate_limit_per_minute: int = int(os.getenv("REGISTER_RATE_LIMIT_PER_MINUTE", "5"))
     # per-account 锁定：连续失败 ≥ threshold 次 → 锁定 lock_minutes 分钟
     account_lock_threshold: int = int(os.getenv("ACCOUNT_LOCKOUT_THRESHOLD", "5"))
     account_lock_minutes: int = int(os.getenv("ACCOUNT_LOCKOUT_MINUTES", "15"))

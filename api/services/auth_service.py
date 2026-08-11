@@ -85,7 +85,7 @@ def _display_name(user: dict[str, Any]) -> str:
 
 
 class AuthService:
-    """认证全业务（登录 / 刷新 / 登出 / me / 改密 / dev-login）。"""
+    """认证全业务（登录 / 注册 / 刷新 / 登出 / me / 改密 / dev-login）。"""
 
     # ── 登录 ─────────────────────────────────────────────────
 
@@ -152,6 +152,66 @@ class AuthService:
         user = us.get_by_username(uname) or user  # 重新读取更新后的行
 
         return self._issue_tokens(user, ip, user_agent, event="login_success")
+
+    # ── 注册（开放自助注册，默认 dispatcher，注册即登录）──────────────
+
+    def register(
+        self,
+        username: str,
+        password: str,
+        email: str | None = None,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
+        """开放注册：默认 ``dispatcher`` 最小权限 + 注册即登录。
+
+        编排（架构 register-rbac §1.1 + 共享知识 #7，**零复制 login 逻辑**）：
+        1. ``UserService.create_user(role="dispatcher", must_change_password=False,
+           actor_id="register", ...)`` —— 409/422 语义直接继承；内部另记
+           ``user_created``（detail="actor=register role=dispatcher"）；
+        2. 成功 → ``_issue_tokens(event="register_success")`` —— 签发 access/
+           refresh（claims 与 login 同构，**不含 thread_id**）+ refresh 落库
+           + 审计一条龙复用；
+        3. 失败（HTTPException 409/422）→ 审计 ``register_failed``
+           （detail 记状态码+文案，不存密码/明文 token）后 re-raise。
+
+        Args:
+            username: 登录名（小写唯一）。
+            password: 密码（须满足策略：≥8 位 + 数字 + 字母）。
+            email: 可选邮箱（非空时唯一；与 create_user 一致不校验格式）。
+            ip / user_agent: 审计上下文。
+
+        Returns:
+            LoginResponse 同构 dict（access+refresh+user{role=dispatcher}）。
+
+        Raises:
+            HTTPException 409: 用户名/邮箱已存在。
+            HTTPException 422: 用户名非法 / 密码不满足策略。
+        """
+        from api.services.user_service import UserService
+
+        try:
+            user = UserService().create_user(
+                username=username,
+                password=password,
+                role="dispatcher",
+                email=email,
+                actor_id="register",
+                ip_address=ip,
+                user_agent=user_agent,
+                must_change_password=False,
+            )
+        except HTTPException as exc:
+            AuthAuditService.record(
+                "register_failed",
+                username=(username or "").strip().lower(),
+                ip_address=ip,
+                user_agent=user_agent,
+                detail=f"{exc.status_code}: {exc.detail}",
+            )
+            raise
+
+        return self._issue_tokens(user, ip, user_agent, event="register_success")
 
     # ── 刷新（轮换）──────────────────────────────────────────
 

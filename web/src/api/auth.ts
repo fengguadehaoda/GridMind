@@ -16,6 +16,8 @@ import type {
   LoginResponse,
   LogoutResponse,
   MeResponse,
+  RbacMatrixResponse,
+  RegisterRequest,
   Role,
   UserCreateRequest,
   UserSummary,
@@ -56,6 +58,18 @@ export async function login(username: string, password: string): Promise<LoginRe
     username,
     password,
   })
+  return data
+}
+
+/** POST /auth/register — 开放注册（默认角色 dispatcher，注册即登录） */
+export async function register(payload: RegisterRequest): Promise<LoginResponse> {
+  const { data } = await httpClient.post<LoginResponse>('/auth/register', payload)
+  return data
+}
+
+/** GET /rbac/matrix — 角色×端点权限矩阵（仅 admin；dev 放行、X-Admin-Token 等效） */
+export async function fetchRbacMatrix(): Promise<RbacMatrixResponse> {
+  const { data } = await httpClient.get<RbacMatrixResponse>('/rbac/matrix')
   return data
 }
 

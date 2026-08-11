@@ -1,7 +1,8 @@
 """V1.8.0 认证（T02）· /auth/* 路由。
 
-端点（架构 auth-architecture §3.3 + PRD §5）：
+端点（架构 auth-architecture §3.3 + PRD §5 + register-rbac 增量）：
 - ``POST /auth/login``            公开 + slowapi 10/min/IP（per-IP 第二层防线）
+- ``POST /auth/register``         公开 + slowapi 5/min/IP（开放注册，注册即登录）
 - ``POST /auth/refresh``          公开（refresh 轮换）
 - ``POST /auth/logout``           公开（revoke 幂等）
 - ``GET  /auth/me``               ``verify_jwt_if_prod``（dev 放行 → 占位用户）
@@ -31,6 +32,7 @@ from api.schemas.auth import (
     LogoutResponse,
     MeResponse,
     RefreshRequest,
+    RegisterRequest,
 )
 from api.services.auth import (
     verify_jwt_if_prod,
@@ -58,6 +60,25 @@ async def login(request: Request, req: LoginRequest) -> LoginResponse:
     """
     ip, ua = _request_meta(request)
     data = AuthService().login(req.username, req.password, ip=ip, user_agent=ua)
+    return LoginResponse(**data)
+
+
+@router.post("/register", response_model=LoginResponse)
+@limiter.limit(lambda: f"{settings.register_rate_limit_per_minute}/minute")
+async def register(request: Request, req: RegisterRequest) -> LoginResponse:
+    """开放注册（公开）：username/password/可选 email → 默认 dispatcher，注册即登录。
+
+    - 请求体**不含 role**（Pydantic ``extra="ignore"`` 静默忽略恶意 role，
+      防注册即提权，架构 register-rbac 共享知识 #1）；
+    - per-IP 限流（默认 5/min，比 login 10/min 更严；超限 → 429）；
+    - 409 用户名/邮箱已存在；422 用户名非法/密码不满足策略（继承 create_user）；
+    - 成功返回与 login **完全同构**的 ``LoginResponse``（access+refresh+
+      user{role=dispatcher}），前端 ``applyLoginResponse`` 一行接入。
+    """
+    ip, ua = _request_meta(request)
+    data = AuthService().register(
+        req.username, req.password, email=req.email, ip=ip, user_agent=ua
+    )
     return LoginResponse(**data)
 
 

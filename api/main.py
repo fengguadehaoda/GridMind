@@ -54,6 +54,7 @@ from api.schemas import (
 )
 from api.routers import feature_intro_router, knowledge_upload_router
 from api.routers.auth import router as auth_router
+from api.routers.rbac import router as rbac_router
 from api.routers.users import router as users_router
 from api.schemas.hitl_edit import EditInterruptRequest
 from api.services.auth import (
@@ -366,8 +367,10 @@ app.include_router(knowledge_upload_router)
 # ── V1.8.0 认证（T02/T03）：真实登录 + 用户管理路由 ─────────────────────
 # /auth/* —— login/refresh/logout/me/change-password/dev-login（公开 + verify_jwt_if_prod）
 # /users* —— GET/POST /users、PATCH /users/{id}（require_role(ADMIN)，dev 放行）
+# ── V1.8.0 增量（register-rbac）：/auth/register（公开）+ /rbac/matrix（admin）──
 app.include_router(auth_router)
 app.include_router(users_router)
+app.include_router(rbac_router)
 
 
 # ═══════════════════════════════════════════════════════

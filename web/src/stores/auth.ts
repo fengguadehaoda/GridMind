@@ -66,6 +66,21 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * 注册：POST /auth/register → 复用 applyLoginResponse（注册即登录）。
+   * 默认角色 dispatcher；must_change_password=0（用户自设密码，无需首次改密）。
+   */
+  async function register(username: string, password: string, email?: string): Promise<void> {
+    status.value = 'loading'
+    try {
+      const resp = await authApi.register({ username, password, email: email ?? null })
+      applyLoginResponse(resp)
+    } catch (err) {
+      status.value = 'anonymous'
+      throw err
+    }
+  }
+
   /** dev 快速登录（仅 dev；生产 404 fail-closed） */
   async function devLogin(roleValue: Role): Promise<void> {
     status.value = 'loading'
@@ -171,6 +186,7 @@ export const useAuthStore = defineStore('auth', () => {
     role,
     displayName,
     login,
+    register,
     devLogin,
     refresh,
     logout,

@@ -1,10 +1,17 @@
 <!--
-  web/src/views/LoginView.vue · V1.8.0 真实登录页（T05）
+  web/src/views/LoginView.vue · V1.8.0 真实登录页（T05）+ 开放注册（register-rbac T4）
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  架构 auth-architecture §1.4 + PRD §六 6.1 + US-1/US-2/US-8：
+  架构 auth-architecture §1.4 + PRD §六 6.1 + US-1/US-2/US-8 +
+  register-rbac §1.4 F04（登录/注册同页 Tab 切换，拍板 2）：
 
-  - 居中卡片、Logo、用户名/密码输入（回车提交、密码显隐）、错误提示条、
-    登录主按钮（loading 防重复提交）、无注册入口（仅管理员创建）；
+  - 居中卡片、Logo、`el-tabs`（登录/注册）切换，各自表单状态保留；
+  - 登录表单：用户名/密码（回车提交、密码显隐）、错误提示条、loading 防重复；
+  - 注册表单：用户名/密码/确认密码/邮箱（可选）+ 前端校验（用户名非空、
+    小写规则、密码 ≥8 位含数字+字母、**两次密码一致本地拦截**、邮箱轻校验）
+    + loading 防重复 + 错误条（409/422/429 明确文案，**不清空已填用户名**）；
+  - 注册成功 → `authStore.register`（注册即登录）→ `router.replace(redirectTarget)`
+    （与登录一致）；底部小字「注册即登录；默认角色为调度员；密码至少 8 位
+    且包含数字和字母」；
   - 登录成功：must_change_password=1 → 同页改密面板（改密后清标记）；
     90 天过期（/auth/me password_expiring）→ 一次性 ElMessage 提醒；
   - redirect 回跳（守卫记录 / ?redirect= 参数），无 redirect 回首页。
@@ -14,7 +21,7 @@
 import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Hide, Lock, User, View } from '@element-plus/icons-vue'
+import { Hide, Lock, Message, User, View } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
 import { changePassword } from '../api/auth'
 import LogoHorizontal from '../components/brand/LogoHorizontal.vue'
@@ -23,10 +30,23 @@ const authStore = useAuthStore()
 const route = useRoute()
 const router = useRouter()
 
+/** 登录 / 注册 Tab（register-rbac T4，拍板 2） */
+const activeTab = ref<'login' | 'register'>('login')
+
 const form = reactive({ username: '', password: '' })
 const showPassword = ref(false)
 const loading = ref(false)
 const errorMsg = ref('')
+
+/** 注册表单（用户名/密码/确认密码/邮箱可选） */
+const registerForm = reactive({
+  username: '',
+  password: '',
+  confirmPassword: '',
+  email: '',
+})
+const registerLoading = ref(false)
+const registerError = ref('')
 
 /** 登录成功后回跳目标（?redirect= 优先，否则守卫记录，最后首页） */
 const redirectTarget = computed<string>(() => {
@@ -86,6 +106,58 @@ async function maybeWarnPasswordExpiry(): Promise<void> {
   }
 }
 
+/** 注册错误文案映射：409/422 透传后端 detail；429 明确限流文案 */
+function registerErrorMessage(err: unknown): string {
+  const status = (err as { response?: { status?: number } })?.response?.status
+  if (status === 429) return '请求过于频繁，请稍后再试'
+  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+  return detail || '注册失败，请稍后重试'
+}
+
+/** 提交注册（回车 / 按钮均走此；前端校验本地拦截，后端兜底） */
+async function onSubmitRegister(): Promise<void> {
+  const username = registerForm.username.trim()
+  const password = registerForm.password
+  const email = registerForm.email.trim()
+
+  registerError.value = ''
+  // 前端轻校验（后端 _validate_password 兜底：≥8 位 + 数字 + 字母）
+  if (!username) {
+    registerError.value = '请输入用户名'
+    return
+  }
+  if (!/^[a-z0-9_.-]{1,64}$/.test(username)) {
+    registerError.value = '用户名仅支持小写字母、数字、_ - .（1-64 位）'
+    return
+  }
+  if (!password || password.length < 8 || !/\d/.test(password) || !/[A-Za-z]/.test(password)) {
+    registerError.value = '密码需至少 8 位，且包含数字和字母'
+    return
+  }
+  // AC1-5：两次密码不一致 → 本地拦截，不提交
+  if (password !== registerForm.confirmPassword) {
+    registerError.value = '两次输入的密码不一致'
+    return
+  }
+  // 邮箱可选；填了才轻校验基础格式（P1-4 后端严格校验未启用，前端先拦）
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    registerError.value = '邮箱格式不正确'
+    return
+  }
+
+  registerLoading.value = true
+  try {
+    await authStore.register(username, password, email || undefined)
+    ElMessage.success('注册成功')
+    void router.replace(redirectTarget.value)
+  } catch (err) {
+    // AC1-7：失败仅错误提示条，**不清空已填用户名**
+    registerError.value = registerErrorMessage(err)
+  } finally {
+    registerLoading.value = false
+  }
+}
+
 /** 首次登录改密提交（改密后撤销全部 refresh；当前 access 仍有效） */
 async function onSubmitPassword(): Promise<void> {
   if (!pwdForm.newPassword || pwdForm.newPassword !== pwdForm.confirmPassword) {
@@ -119,50 +191,129 @@ async function onSubmitPassword(): Promise<void> {
       <h1 class="login-title">灵枢电网 · GridMind</h1>
       <p class="login-subtitle">请登录后继续使用</p>
 
-      <!-- 错误提示条（统一文案，不暴露账号存在性） -->
-      <el-alert
-        v-if="errorMsg"
-        :title="errorMsg"
-        type="error"
-        show-icon
-        :closable="false"
-        class="login-error"
-        data-test="login-error"
-      />
-
-      <el-form label-position="top" class="login-form" @submit.prevent="onSubmit">
-        <el-form-item label="用户名">
-          <el-input
-            v-model="form.username"
-            placeholder="请输入用户名"
-            :prefix-icon="User"
-            data-test="login-username"
-            @keyup.enter="onSubmit"
+      <!-- 登录 / 注册 Tab 切换（拍板 2：同页 Tab，各自表单状态保留） -->
+      <el-tabs v-model="activeTab" class="login-tabs" data-test="login-tabs">
+        <!-- 登录 Tab -->
+        <el-tab-pane label="登录" name="login">
+          <!-- 错误提示条（统一文案，不暴露账号存在性） -->
+          <el-alert
+            v-if="errorMsg"
+            :title="errorMsg"
+            type="error"
+            show-icon
+            :closable="false"
+            class="login-error"
+            data-test="login-error"
           />
-        </el-form-item>
-        <el-form-item label="密码">
-          <el-input
-            v-model="form.password"
-            type="password"
-            placeholder="请输入密码"
-            :prefix-icon="Lock"
-            :show-password="true"
-            data-test="login-password"
-            @keyup.enter="onSubmit"
-          />
-        </el-form-item>
-        <el-button
-          type="primary"
-          class="login-submit"
-          :loading="loading"
-          data-test="login-submit"
-          native-type="submit"
-        >
-          登 录
-        </el-button>
-      </el-form>
 
-      <p class="login-footnote">登录即代表同意安全策略；账号由管理员创建</p>
+          <el-form label-position="top" class="login-form" @submit.prevent="onSubmit">
+            <el-form-item label="用户名">
+              <el-input
+                v-model="form.username"
+                placeholder="请输入用户名"
+                :prefix-icon="User"
+                data-test="login-username"
+                @keyup.enter="onSubmit"
+              />
+            </el-form-item>
+            <el-form-item label="密码">
+              <el-input
+                v-model="form.password"
+                type="password"
+                placeholder="请输入密码"
+                :prefix-icon="Lock"
+                :show-password="true"
+                data-test="login-password"
+                @keyup.enter="onSubmit"
+              />
+            </el-form-item>
+            <el-button
+              type="primary"
+              class="login-submit"
+              :loading="loading"
+              data-test="login-submit"
+              native-type="submit"
+            >
+              登 录
+            </el-button>
+          </el-form>
+
+          <p class="login-footnote">
+            没有账号？
+            <el-link type="primary" :underline="false" data-test="login-to-register" @click="activeTab = 'register'">
+              立即注册
+            </el-link>
+          </p>
+        </el-tab-pane>
+
+        <!-- 注册 Tab（开放注册：默认角色 dispatcher，注册即登录） -->
+        <el-tab-pane label="注册" name="register">
+          <!-- 错误提示条（409/422/429 明确文案；失败不清空已填用户名） -->
+          <el-alert
+            v-if="registerError"
+            :title="registerError"
+            type="error"
+            show-icon
+            :closable="false"
+            class="login-error"
+            data-test="register-error"
+          />
+
+          <el-form label-position="top" class="login-form" @submit.prevent="onSubmitRegister">
+            <el-form-item label="用户名">
+              <el-input
+                v-model="registerForm.username"
+                placeholder="小写字母/数字/_ - .（1-64 位）"
+                :prefix-icon="User"
+                data-test="register-username"
+                @keyup.enter="onSubmitRegister"
+              />
+            </el-form-item>
+            <el-form-item label="密码">
+              <el-input
+                v-model="registerForm.password"
+                type="password"
+                placeholder="至少 8 位，含数字和字母"
+                :prefix-icon="Lock"
+                :show-password="true"
+                data-test="register-password"
+                @keyup.enter="onSubmitRegister"
+              />
+            </el-form-item>
+            <el-form-item label="确认密码">
+              <el-input
+                v-model="registerForm.confirmPassword"
+                type="password"
+                placeholder="请再次输入密码"
+                :prefix-icon="Lock"
+                :show-password="true"
+                data-test="register-confirm-password"
+                @keyup.enter="onSubmitRegister"
+              />
+            </el-form-item>
+            <el-form-item label="邮箱（可选）">
+              <el-input
+                v-model="registerForm.email"
+                placeholder="user@example.com"
+                :prefix-icon="Message"
+                data-test="register-email"
+                @keyup.enter="onSubmitRegister"
+              />
+            </el-form-item>
+            <el-button
+              type="primary"
+              class="login-submit"
+              :loading="registerLoading"
+              data-test="register-submit"
+              native-type="submit"
+            >
+              注 册
+            </el-button>
+          </el-form>
+
+          <p class="login-footnote">注册即登录；默认角色为调度员；密码至少 8 位且包含数字和字母</p>
+        </el-tab-pane>
+      </el-tabs>
     </div>
 
     <!-- 首次登录强制改密弹层 -->
@@ -266,6 +417,14 @@ async function onSubmitPassword(): Promise<void> {
 
 .login-error {
   margin-bottom: var(--space-4);
+}
+
+.login-tabs {
+  margin-bottom: var(--space-2);
+
+  :deep(.el-tabs__nav-wrap::after) {
+    height: 1px;
+  }
 }
 
 .login-form {

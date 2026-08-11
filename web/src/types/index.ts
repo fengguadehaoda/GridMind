@@ -275,6 +275,44 @@ export interface DevLoginRequest {
   role: Role
 }
 
+/* ═══════════════════════════════════════════════════════════════
+ * V1.8.0 增量（register-rbac T3）：开放注册 + 权限矩阵 DTO
+ * 逐字段镜像后端 api/schemas/auth.py RegisterRequest 与
+ * api/schemas/rbac_matrix.py（snake_case，K-1）
+ * ═══════════════════════════════════════════════════════════════ */
+
+/** POST /auth/register 请求体（不含 role——固定 dispatcher，防注册即提权） */
+export interface RegisterRequest {
+  username: string
+  password: string
+  email?: string | null
+}
+
+/** GET /rbac/matrix 角色元信息 */
+export interface RbacRoleMeta {
+  key: Role
+  label: string
+  description: string
+}
+
+/** GET /rbac/matrix 端点类别元信息 */
+export interface RbacCategoryMeta {
+  key: string
+  label: string
+  description: string
+  endpoints: string[]
+}
+
+/** GET /rbac/matrix 响应（只读展示；前端不硬编码权限布尔值） */
+export interface RbacMatrixResponse {
+  roles: RbacRoleMeta[]
+  categories: RbacCategoryMeta[]
+  matrix: Record<Role, Record<string, boolean>>
+  /** 扩展字段：category -> role -> 'own'（仅本人）| 'all'（全量可见） */
+  scope: Record<string, Record<Role, 'own' | 'all'>>
+  generated_at: string
+}
+
 /** 用户管理列表项（GET/POST/PATCH /users；不含 password_hash） */
 export interface UserSummary {
   id: string

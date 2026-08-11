@@ -1,0 +1,88 @@
+sequenceDiagram
+    participant U as 用户
+    participant LV as LoginView（注册 Tab）
+    participant AS as authStore
+    participant API as FastAPI /auth/register
+    participant RL as slowapi limiter
+    participant AUTH as AuthService.register
+    participant US as UserService.create_user
+    participant DB as users / refresh_tokens
+    participant AUDIT as auth_audit_log
+
+    U->>LV: 填用户名/密码/确认密码/邮箱(可选)，提交
+    LV->>LV: 前端校验（非空 / ≥8位数字+字母 / 两次一致 / 邮箱轻校验）
+    LV->>AS: register(username, password, email?)
+    AS->>AS: status='loading'
+    AS->>API: POST /auth/register {username, password, email}
+    Note over API, RL: @limiter.limit(REGISTER_RATE_LIMIT_PER_MINUTE=5/min/IP)
+    alt 超限
+        RL-->>AS: 429（slowapi 标准体）
+        AS-->>LV: errorMsg='请求过于频繁，请稍后再试'
+    else 未超限
+        API->>AUTH: register(username, password, email, ip, ua)
+        AUTH->>US: create_user(username, password, role='dispatcher', email, actor_id='register', must_change_password=False)
+        alt 用户名/邮箱冲突
+            US-->>AUTH: HTTPException 409
+            AUTH->>AUDIT: register_failed（detail=409 文案，不存密码）
+            AUTH-->>API: 409 用户名已存在 / 邮箱已被使用
+            API-->>AS: 409
+            AS-->>LV: errorMsg（保留已填用户名）
+        else 用户名非法/密码弱
+            US-->>AUTH: HTTPException 422
+            AUTH->>AUDIT: register_failed（detail=422 文案）
+            AUTH-->>API: 422
+            API-->>AS: 422
+            AS-->>LV: errorMsg（明确文案）
+        else 成功
+            US->>DB: INSERT users（id=UUID4, role='dispatcher', disabled=0, must_change_password=0, password_history='[]'）
+            US->>AUDIT: user_created（actor=register role=dispatcher）
+            US-->>AUTH: UserSummary（不含 password_hash）
+            AUTH->>AUTH: _issue_tokens(user, ip, ua, event='register_success')
+            AUTH->>AUTH: _build_access_token（claims: sub/user_id/role/name/iss/iat/exp，不含 thread_id，900s）
+            AUTH->>AUTH: _generate_refresh_token（opaque 48B，SHA-256）
+            AUTH->>DB: INSERT refresh_tokens（token_hash, expires_at=now+7d, ip, ua）
+            AUTH->>AUDIT: register_success
+            AUTH-->>API: 200 LoginResponse（与 login 同构）
+            API-->>AS: 200
+            AS->>AS: applyLoginResponse（access 内存 + refresh localStorage + user + status='authenticated'）
+            LV-->>U: ElMessage.success('注册成功') → router.replace(redirectTarget)
+            Note over U, LV: 后续请求经 httpClient 自动带 Authorization: Bearer <access>
+        end
+    end
+
+# ═══════════════════════════════════════════════════════
+# 4.2 权限矩阵加载流程（UsersView → GET /rbac/matrix → 渲染）
+# ═══════════════════════════════════════════════════════
+
+sequenceDiagram
+    participant U as admin
+    participant UV as UsersView（权限矩阵 Tab）
+    participant MT as RbacMatrixTable
+    participant API as FastAPI /rbac/matrix
+    participant RBAC as require_role(Role.ADMIN)
+    participant MX as rbac_matrix.serialize_matrix
+    participant FE as 前端渲染
+
+    U->>UV: 切换到「权限矩阵」Tab
+    UV->>MT: 挂载组件（onMounted）
+    MT->>MT: loading=true；error=null
+    MT->>API: GET /rbac/matrix（httpClient 带 Bearer）
+    API->>RBAC: Depends(require_role(Role.ADMIN))
+    alt 非 admin（生产）
+        RBAC-->>API: 403 权限不足
+        API-->>MT: 403
+        MT->>MT: error='权限不足或加载失败'；loading=false
+        MT-->>U: 错误态 + 「重试」按钮
+    else admin / dev 放行 / X-Admin-Token
+        RBAC-->>API: 通过（identity）
+        API->>MX: serialize_matrix()
+        MX->>MX: 读取 ROLE_CATEGORY_MATRIX / ROLE_META / CATEGORY_META / SCOPE_MATRIX
+        MX-->>API: {roles, categories, matrix, scope, generated_at}
+        API-->>MT: 200 RbacMatrixResponse
+        MT->>MT: loading=false
+        MT->>FE: 渲染 7 行 × 5 列矩阵
+        Note over FE: 每格 ✓(绿)/✗(灰) + scope 角标（own→本人/all→全部）；<br/>行头悬浮 endpoints；点击行/列头高亮 + 说明卡；纯只读
+        MT-->>U: 矩阵展示完成
+    end
+    Note over MT, FE: 矩阵数据仅来自后端；前端零硬编码权限布尔值（AC3-3）
+
