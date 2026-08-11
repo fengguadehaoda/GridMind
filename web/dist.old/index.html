@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="灵枢电网 GridMind · 电力 AI 调度中枢" />
+    <meta name="theme-color" content="#0a1228" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f5f7fa" media="(prefers-color-scheme: light)" />
+
+    <!-- Favicon：双主题适配 -->
+    <link rel="icon" type="image/svg+xml" href="/logo/favicon.svg" media="(prefers-color-scheme: dark)" />
+    <link rel="icon" type="image/svg+xml" href="/logo/favicon-light.svg" media="(prefers-color-scheme: light)" />
+    <link rel="apple-touch-icon" href="/logo/apple-touch-icon.svg" />
+
+    <title>灵枢电网 · GridMind · 控制中心</title>
+
+    <!--
+      反 FOUC 同步脚本（架构 §3.2 + §4.2 时序图）
+      在 Vue mount 之前完成 data-theme 注入，避免主题闪烁
+      必须在 <script type="module"> 之前执行
+    -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('gridmind.theme');
+          var theme = saved;
+          if (theme !== 'dark' && theme !== 'light') {
+            theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+          }
+          document.documentElement.setAttribute('data-theme', theme);
+          // 同步更新 favicon（避免暗色 favicon 在亮主题浏览器中）
+          var darkFav = document.querySelector('link[rel="icon"][media*="dark"]');
+          var lightFav = document.querySelector('link[rel="icon"][media*="light"]');
+          if (darkFav && lightFav) {
+            if (theme === 'light') {
+              darkFav.remove();
+            } else {
+              lightFav.remove();
+            }
+          }
+        } catch (e) {
+          // private mode / localStorage 不可用 → 回退到 dark
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-0shVR0WN.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DGXefXv5.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

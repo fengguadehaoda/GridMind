@@ -316,6 +316,28 @@ def check_mcp_tools(api_base_url: str) -> None:
         print(f"  ⚠️  无法探测 MCP 状态: {e}")
 
 
+def check_register_endpoint(api_base_url: str) -> None:
+    """API 就绪后校验 openapi.json 是否含 /auth/register（旧 uvicorn 检测）。
+
+    背景（可观测性盲区修复）：用户注册报 404 "Not Found" 的根因是打到的
+    API 实例不含 /auth/register（旧 uvicorn 未重启 / 端口错配），而非
+    前端或源码问题。本函数在启动时就绪轮询通过后**额外**检查一次——
+    只附加 stdout 警告，**不**改变启动成功判断（仍以 ``/`` 200 通过为准）。
+    """
+    print("  🔍 校验 API 是否包含注册端点 /auth/register ...")
+    try:
+        with urllib.request.urlopen(f"{api_base_url}/openapi.json", timeout=5) as resp:
+            spec = json.loads(resp.read().decode("utf-8"))
+        paths = spec.get("paths", {})
+        if "/auth/register" in paths:
+            print("  ✅ API 包含注册端点 /auth/register")
+        else:
+            print("  ⚠ 当前 API 实例不含 /auth/register（可能是旧 uvicorn 未重启）")
+            print("    建议 Ctrl+C 重跑 python -m scripts.start_all")
+    except Exception as e:
+        print(f"  ⚠️  无法校验注册端点（openapi.json 获取失败: {e}）")
+
+
 def precheck_ports(api_port: int, mcp_port: int) -> bool:
     """启动前端口预检：API/MCP 端口被占用则明确报错并返回 False。"""
     problems: list[str] = []
@@ -416,6 +438,10 @@ def main() -> None:
 
     # API 就绪后探测 MCP 工具数（tools=0 时给出提示，问题 5）
     check_mcp_tools(f"http://127.0.0.1:{api_port}")
+
+    # API 就绪后校验 /auth/register 端点（旧 uvicorn 未重启 → 前端注册 404，
+    # 只附加警告，不改变启动成功判断）
+    check_register_endpoint(f"http://127.0.0.1:{api_port}")
 
     # ── 启动前端 ────────────────────────────────────
     frontend_proc = start_frontend()

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 320" width="240" height="320" role="img" aria-label="灵枢电网 GridMind">
+  <!-- 顶栏图形 -->
+  <g transform="translate(80, 30)">
+    <polygon points="40,4 72,22 72,58 40,76 8,58 8,22" fill="none" stroke="#00E5FF" stroke-width="2.5" stroke-linejoin="round"/>
+    <polygon points="40,16 62,28 62,52 40,64 18,52 18,28" fill="rgba(0, 229, 255, 0.08)" stroke="#00E5FF" stroke-width="1.2" stroke-opacity="0.4" stroke-linejoin="round"/>
+    <path d="M40 24 L52 48 L40 56 L28 48 Z" fill="#00E5FF"/>
+    <circle cx="40" cy="40" r="4" fill="#FFB300"/>
+    <circle cx="40" cy="4" r="2.5" fill="#00E5FF"/>
+    <circle cx="72" cy="22" r="2.5" fill="#00E5FF" fill-opacity="0.6"/>
+    <circle cx="72" cy="58" r="2.5" fill="#FFB300"/>
+    <circle cx="40" cy="76" r="2.5" fill="#00E5FF" fill-opacity="0.6"/>
+    <circle cx="8" cy="58" r="2.5" fill="#00E5FF" fill-opacity="0.6"/>
+    <circle cx="8" cy="22" r="2.5" fill="#00E5FF"/>
+  </g>
+  <!-- 分隔条 -->
+  <line x1="60" y1="150" x2="180" y2="150" stroke="#00E5FF" stroke-width="1" stroke-opacity="0.4"/>
+  <!-- 中文主名（大） -->
+  <text x="120" y="210" text-anchor="middle" font-family="'PingFang SC', 'Microsoft YaHei', 'Inter', sans-serif" font-size="36" font-weight="700" fill="#E6F1FF" letter-spacing="6">灵枢电网</text>
+  <!-- 英文副名 -->
+  <text x="120" y="248" text-anchor="middle" font-family="'Orbitron', 'Inter', sans-serif" font-size="22" font-weight="700" fill="#00E5FF" letter-spacing="3">GridMind</text>
+  <!-- 副标 -->
+  <text x="120" y="278" text-anchor="middle" font-family="'Inter', 'PingFang SC', sans-serif" font-size="12" font-weight="400" fill="#8FA3C7" letter-spacing="4">电力 AI 调度中枢</text>
+</svg>

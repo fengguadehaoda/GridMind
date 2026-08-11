@@ -48,6 +48,28 @@ const registerForm = reactive({
 const registerLoading = ref(false)
 const registerError = ref('')
 
+/** 注册错误技术详情（仅 dev 渲染）：status + url + method，辅助定位"打到哪个后端" */
+interface RegisterErrorInfo {
+  message: string
+  status: number | null
+  url: string
+  method: string
+}
+const registerErrorInfo = ref<RegisterErrorInfo | null>(null)
+/** 是否 dev 构建（技术详情折叠区仅 dev 下渲染） */
+const isDev = import.meta.env.DEV
+
+/** 技术详情折叠区展示文本（status + url + method，精确换行不依赖模板空白压缩） */
+const registerErrorDetailText = computed<string>(() => {
+  const info = registerErrorInfo.value
+  if (!info) return ''
+  return [
+    `status : ${info.status ?? '-'}`,
+    `url    : ${info.url}`,
+    `method : ${info.method}`,
+  ].join('\n')
+})
+
 /** 登录成功后回跳目标（?redirect= 优先，否则守卫记录，最后首页） */
 const redirectTarget = computed<string>(() => {
   if (typeof route.query.redirect === 'string' && route.query.redirect.length > 0) {
@@ -106,12 +128,72 @@ async function maybeWarnPasswordExpiry(): Promise<void> {
   }
 }
 
-/** 注册错误文案映射：409/422 透传后端 detail；429 明确限流文案 */
-function registerErrorMessage(err: unknown): string {
-  const status = (err as { response?: { status?: number } })?.response?.status
-  if (status === 429) return '请求过于频繁，请稍后再试'
-  const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-  return detail || '注册失败，请稍后重试'
+/** 从 axios 错误中提取可观测元信息（status/url/method；网络错误无 response 时回退 config） */
+function extractErrorMeta(err: unknown): { status: number | null; url: string; method: string } {
+  const e = err as {
+    response?: { status?: number; config?: { url?: string; method?: string; baseURL?: string } }
+    config?: { url?: string; method?: string; baseURL?: string }
+  }
+  const status = e?.response?.status ?? null
+  const cfg = e?.response?.config ?? e?.config
+  const path = cfg?.url ?? '/auth/register'
+  const baseURL = cfg?.baseURL ?? ''
+  const method = cfg?.method ? String(cfg.method).toUpperCase() : 'POST'
+  const url = baseURL ? `${String(baseURL).replace(/\/$/, '')}${path}` : path
+  return { status, url, method }
+}
+
+/**
+ * 注册错误文案分类映射（可观测性改造：404/网络错误等秒定位根因）。
+ * 返回 { message, status, url, method }——message 用于错误条展示，
+ * status/url/method 供 dev 技术详情折叠区渲染。
+ */
+function registerErrorMessage(err: unknown): RegisterErrorInfo {
+  const { status, url, method } = extractErrorMeta(err)
+  const e = err as {
+    code?: string
+    message?: string
+    response?: { data?: { detail?: string } }
+  }
+
+  // 网络层错误（无 HTTP 响应）：连接拒绝 / 超时 / Vite 代理不可达
+  if (!e.response) {
+    const code = e.code ?? ''
+    const msg = e.message ?? ''
+    if (code === 'ECONNABORTED' || code === 'ERR_NETWORK' || /network|timeout/i.test(msg)) {
+      return {
+        message: `无法连接到后端（${url}），请确认 uvicorn 是否在运行`,
+        status,
+        url,
+        method,
+      }
+    }
+  }
+
+  let message: string
+  switch (status) {
+    case 404:
+      message =
+        '后端无注册端点 /auth/register（可能后端未重启或端口错配），请检查后端是否含最新版'
+      break
+    case 401:
+      message = '需要管理员配置（生产模式要求登录的接口）'
+      break
+    case 409:
+      message = '用户名已被占用'
+      break
+    case 422:
+      message = '密码 ≥8 位且包含数字和字母；用户名仅支持小写字母数字_-.（1-64 位）'
+      break
+    case 429:
+      message = '请求过于频繁，请稍后再试'
+      break
+    default: {
+      const detail = e.response?.data?.detail
+      message = detail || '注册失败，请稍后重试'
+    }
+  }
+  return { message, status, url, method }
 }
 
 /** 提交注册（回车 / 按钮均走此；前端校验本地拦截，后端兜底） */
@@ -121,6 +203,7 @@ async function onSubmitRegister(): Promise<void> {
   const email = registerForm.email.trim()
 
   registerError.value = ''
+  registerErrorInfo.value = null
   // 前端轻校验（后端 _validate_password 兜底：≥8 位 + 数字 + 字母）
   if (!username) {
     registerError.value = '请输入用户名'
@@ -151,8 +234,9 @@ async function onSubmitRegister(): Promise<void> {
     ElMessage.success('注册成功')
     void router.replace(redirectTarget.value)
   } catch (err) {
-    // AC1-7：失败仅错误提示条，**不清空已填用户名**
-    registerError.value = registerErrorMessage(err)
+    // AC1-7：失败仅错误提示条，**不清空已填用户名**；同时记录技术详情（dev 展示）
+    registerErrorInfo.value = registerErrorMessage(err)
+    registerError.value = registerErrorInfo.value.message
   } finally {
     registerLoading.value = false
   }
@@ -258,6 +342,15 @@ async function onSubmitPassword(): Promise<void> {
             class="login-error"
             data-test="register-error"
           />
+          <!-- 技术详情（仅 dev）：status + url + method，辅助定位"打到哪个后端" -->
+          <details
+            v-if="isDev && registerErrorInfo"
+            class="register-error-details"
+            data-test="register-error-details"
+          >
+            <summary>技术详情（仅 dev）</summary>
+            <pre class="register-error-meta">{{ registerErrorDetailText }}</pre>
+          </details>
 
           <el-form label-position="top" class="login-form" @submit.prevent="onSubmitRegister">
             <el-form-item label="用户名">
@@ -417,6 +510,29 @@ async function onSubmitPassword(): Promise<void> {
 
 .login-error {
   margin-bottom: var(--space-4);
+}
+
+.register-error-details {
+  margin: calc(-1 * var(--space-2)) 0 var(--space-4);
+  font-family: var(--font-mono, 'SFMono-Regular', Consolas, 'Courier New', monospace);
+  font-size: var(--fs-xs, 12px);
+  color: var(--text-tertiary, #999);
+
+  summary {
+    cursor: pointer;
+    user-select: none;
+  }
+}
+
+.register-error-meta {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-base);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-sm, 6px);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.5;
 }
 
 .login-tabs {

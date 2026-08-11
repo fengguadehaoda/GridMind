@@ -1,0 +1,1 @@
+import{a as s}from"./index-DEm3lxdk.js";const e=s.create({baseURL:"/api",timeout:3e4});async function n(t,a=50){const{data:i}=await e.get("/audit/hitl",{params:{decision:t,limit:a}});return i}async function r(t){const{data:a}=await e.get(`/audit/hitl/${t}`);return a}async function o(){const{data:t}=await e.get("/metrics/summary");return t}export{n as a,o as b,r as f};
